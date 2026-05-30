@@ -6,11 +6,17 @@ python := if os() == "windows" { ".venv\\Scripts\\python" } else { ".venv/bin/py
 default:
     @just --list
 
-on:
-    {{python}} controls.py on
+spa-on:
+    {{python}} controls.py spa-on
 
-off:
-    {{python}} controls.py off
+spa-off:
+    {{python}} controls.py spa-off
+
+pool-on:
+    {{python}} controls.py pool-on
+
+pool-off:
+    {{python}} controls.py pool-off
 
 status:
     {{python}} controls.py status
