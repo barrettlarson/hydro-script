@@ -6,6 +6,7 @@ A Python CLI for automating a spa/hot tub via a Jandy iAquaLink controller. Hand
 
 - Python 3.8+
 - A Jandy iAquaLink system with an active account
+- [just](https://github.com/casey/just) (optional, for shorthand commands)
 
 ## Setup
 
@@ -14,29 +15,37 @@ python -m venv .venv
 .venv\Scripts\activate        # Windows
 # source .venv/bin/activate   # macOS/Linux
 
-pip install iaqualink
+pip install iaqualink python-dotenv
 ```
 
-Set your credentials as environment variables:
+Create a `.env` file in the project root with your credentials:
 
-```bash
-# Windows
-set IAQUALINK_USER=you@example.com
-set IAQUALINK_PASS=yourpassword
-
-# macOS/Linux / .env file
-export IAQUALINK_USER=you@example.com
-export IAQUALINK_PASS=yourpassword
+```
+IAQUALINK_USER=you@example.com
+IAQUALINK_PASS=yourpassword
 ```
 
 ## Usage
 
+With `just` installed:
+
 ```bash
-python controls.py on        # enable spa mode, set temp, wait for valves, turn on heater
-python controls.py off       # turn off heater, purge heat, disable spa mode
-python controls.py status    # print current state of spa pump, heater, and set point
-python controls.py safety    # shut down only if spa is currently on (for cron)
+just on      # enable spa mode, set temp, wait for valves, turn on heater
+just off     # turn off heater, purge heat exchanger, disable spa mode
+just status  # print current state of spa pump, heater, and set point
+just safety  # shut down only if spa is currently on (for cron)
 ```
+
+Or directly with Python:
+
+```bash
+python controls.py on
+python controls.py off
+python controls.py status
+python controls.py safety
+```
+
+Install `just` on Windows: `winget install Casey.Just`
 
 ### `safety` command — nightly cron job
 
