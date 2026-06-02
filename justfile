@@ -7,19 +7,19 @@ default:
     @just --list
 
 spa-on:
-    {{python}} controls.py spa-on
+    {{python}} server/app/controls.py spa-on
 
 spa-off:
-    {{python}} controls.py spa-off
+    {{python}} server/app/controls.py spa-off
 
 pool-on:
-    {{python}} controls.py pool-on
+    {{python}} server/app/controls.py pool-on
 
 pool-off:
-    {{python}} controls.py pool-off
+    {{python}} server/app/controls.py pool-off
 
 status:
-    {{python}} controls.py status
+    {{python}} server/app/controls.py status
 
 safety:
-    {{python}} controls.py safety
+    {{python}} server/app/controls.py safety

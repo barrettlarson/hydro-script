@@ -37,7 +37,6 @@ SPA_DEVICE = "spa_pump" # the "spa mode" toggle
 SPA_HEATER = "spa_heater"
 SPA_SETPOINT_DEV = "spa_set_point"
 
-POOL_DEVICE = "pool_pump"
 POOL_HEATER = "pool_heater"
 POOL_SETPOINT_DEV = "pool_set_point"
 # --------------------------------------------------------------------
@@ -69,7 +68,7 @@ def require(devices, key):
 
 
 async def cmd_status(devices):
-    for key in (SPA_DEVICE, SPA_HEATER, SPA_SETPOINT_DEV, POOL_DEVICE, POOL_HEATER, POOL_SETPOINT_DEV):
+    for key in (SPA_DEVICE, SPA_HEATER, SPA_SETPOINT_DEV, POOL_HEATER, POOL_SETPOINT_DEV):
         dev = devices.get(key)
         if dev is None:
             print(f"{key:18s} : (not present)")
