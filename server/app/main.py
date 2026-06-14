@@ -19,7 +19,7 @@ load_dotenv()
 app = FastAPI()
 
 
-# ---- State cache (stub for future background poller) ---------------
+# State cache (stub for future background poller) ---------------
 
 
 class StateCache:
@@ -35,7 +35,7 @@ class StateCache:
 cache = StateCache()
 
 
-# ---- Helpers -------------------------------------------------------
+# Helpers 
 
 ACTIONS: dict[str, Any] = {
     "spa-on": controls.cmd_spa_on,
@@ -75,8 +75,7 @@ async def _get_status() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ---- Endpoints -----------------------------------------------------
-
+# Endpoints
 
 @app.get("/")
 def read_root() -> dict[str, str]:
