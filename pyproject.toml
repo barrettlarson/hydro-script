@@ -1,0 +1,20 @@
+[project]
+name = "hydro-script"
+version = "0.1.0"
+description = "Pool/spa automation for Jandy iAquaLink"
+requires-python = ">=3.12"
+dependencies = [
+    "iaqualink",
+    "python-dotenv",
+    "fastapi",
+    "uvicorn[standard]",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+    "mypy",
+    "ruff",
+]
