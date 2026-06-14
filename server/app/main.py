@@ -35,7 +35,7 @@ class StateCache:
 cache = StateCache()
 
 
-# Helpers 
+# Helpers
 
 ACTIONS: dict[str, Any] = {
     "spa-on": controls.cmd_spa_on,
@@ -76,6 +76,7 @@ async def _get_status() -> dict[str, Any]:
 
 
 # Endpoints
+
 
 @app.get("/")
 def read_root() -> dict[str, str]:
