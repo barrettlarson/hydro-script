@@ -150,7 +150,7 @@ async def cmd_safety(devices: dict[str, Any]) -> list[str]:
         messages.extend(await cmd_pool_off(devices))
     if spa_on and spa_heater_on:
         messages.extend(await cmd_spa_off(devices))
-    elif spa_on:
+    elif spa_on and spa is not None:
         await spa.turn_off()
         messages.append("Spa mode disabled.")
 

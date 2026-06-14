@@ -21,6 +21,7 @@ app = FastAPI()
 
 # ---- State cache (stub for future background poller) ---------------
 
+
 class StateCache:
     """Holds the latest system snapshot and metadata."""
 
@@ -75,6 +76,7 @@ async def _get_status() -> dict[str, Any]:
 
 
 # ---- Endpoints -----------------------------------------------------
+
 
 @app.get("/")
 def read_root() -> dict[str, str]:

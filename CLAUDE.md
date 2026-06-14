@@ -113,16 +113,15 @@ Status legend: [x] done · [~] in progress · [ ] not started
 
 - [x] Logic/interface refactor (controls.py pure logic, separate cli.py thin wrapper)
 - [x] Connection helper module (aqualink.py — credentials, open_devices)
-- [ ] Unit tests for control logic (sequencing, exclusion, safety, partial)
+- [x] Unit tests for control logic (sequencing, exclusion, safety, partial)
 - [x] FastAPI app with action endpoints (caching poll layer stubbed for later)
 - [ ] Error taxonomy + StateCache observability (health surface, history)
 - [ ] Tests for classifier + cache behavior
 - [x] Switch to uv for dependency management (pyproject.toml + uv.lock)
 - [ ] Decide: action endpoints sync (block during VALVE_DELAY) vs. background
       task + poll-for-result. Currently sync. Revisit when building frontend UX.
-- [ ] justfile recipes for new module paths (cli, uvicorn, pytest)
-- [ ] GitHub Actions CI: run pytest + lint on push (high portfolio signal)
-- [ ] Type checking (mypy) + lint (ruff) in CI
+- [x] justfile recipes for new module paths (cli, uvicorn, pytest)
+- [x] GitHub Actions CI: run pytest + ruff + mypy on push
 - [ ] README with architecture diagram (Jandy cloud → poller → cache → API → UI)
 
 ## Phase 2 — Web application [ ]
