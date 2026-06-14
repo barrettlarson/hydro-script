@@ -44,10 +44,9 @@ Consequences:
 
 ## Design principles for this codebase
 
-1. **Logic/interface separation.** (target, not yet done) Pure logic in
-   `controls.py` (raises exceptions, returns values, no print/exit/argv). CLI
-   and FastAPI both import it. This is what makes the logic testable. Currently
-   `controls.py` still mixes CLI concerns — refactor is Phase 1 work.
+1. **Logic/interface separation.** Pure logic in `controls.py` (raises
+   exceptions, returns values, no print/exit/argv). CLI and FastAPI both import
+   it. This is what makes the logic testable.
 2. **Cache decouples clients from upstream.** (target) A single background
    poller polls Jandy; HTTP requests read an in-memory cache. Client count
    never multiplies upstream load.
@@ -67,8 +66,10 @@ Consequences:
 server/
   app/
     __init__.py
-    controls.py   # all control logic + CLI entry point (not yet refactored)
-    main.py       # FastAPI scaffold (partially started, not functional yet)
+    aqualink.py   # connection helper (credentials, open_devices, require)
+    controls.py   # pure logic: spa/pool on-off, status read, safety
+    cli.py        # thin CLI wrapper (print/exit/argv)
+    main.py       # FastAPI: action endpoints, status, health
   tests/
     test_controls.py  # (empty, tests not yet written)
 client/               # (future) React + TypeScript frontend
@@ -84,15 +85,15 @@ uv.lock               # lockfile for reproducible installs
 
 ```
 just spa-on / spa-off / pool-on / pool-off / status / safety
-python server/app/controls.py [spa-on|spa-off|pool-on|pool-off|status|safety]
-uvicorn app.main:app --reload      # dev server (not functional yet)
-pytest                             # test suite (no tests yet)
+PYTHONPATH=server python -m app.cli [spa-on|spa-off|pool-on|pool-off|status|safety]
+PYTHONPATH=server uvicorn app.main:app --reload   # dev server
+pytest                                             # test suite (no tests yet)
 ```
 
 Cron (deploy target, Linux): nightly safety shutoff
 
 ```
-0 2 * * * <python> server/app/controls.py safety >> <log> 2>&1
+0 2 * * * PYTHONPATH=server <python> -m app.cli safety >> <log> 2>&1
 ```
 
 ---
@@ -110,10 +111,10 @@ Status legend: [x] done · [~] in progress · [ ] not started
 
 ## Phase 1 — Rigor + API foundation [~]
 
-- [ ] Logic/interface refactor (controls.py pure logic, separate cli.py thin wrapper)
-- [ ] Connection helper module (aqualink.py — credentials, open_devices)
+- [x] Logic/interface refactor (controls.py pure logic, separate cli.py thin wrapper)
+- [x] Connection helper module (aqualink.py — credentials, open_devices)
 - [ ] Unit tests for control logic (sequencing, exclusion, safety, partial)
-- [~] FastAPI app with caching poll layer (main.py scaffolded, not functional)
+- [x] FastAPI app with action endpoints (caching poll layer stubbed for later)
 - [ ] Error taxonomy + StateCache observability (health surface, history)
 - [ ] Tests for classifier + cache behavior
 - [x] Switch to uv for dependency management (pyproject.toml + uv.lock)
