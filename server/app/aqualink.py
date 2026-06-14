@@ -34,9 +34,7 @@ def get_credentials() -> tuple[str, str]:
     user = os.environ.get("IAQUALINK_USER")
     pw = os.environ.get("IAQUALINK_PASS")
     if not user or not pw:
-        raise MissingCredentials(
-            "Set IAQUALINK_USER and IAQUALINK_PASS environment variables."
-        )
+        raise MissingCredentials("Set IAQUALINK_USER and IAQUALINK_PASS environment variables.")
     return user, pw
 
 
