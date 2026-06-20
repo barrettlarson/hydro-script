@@ -115,8 +115,8 @@ Status legend: [x] done · [~] in progress · [ ] not started
 - [x] Connection helper module (aqualink.py — credentials, open_devices)
 - [x] Unit tests for control logic (sequencing, exclusion, safety, partial)
 - [x] FastAPI app with action endpoints (caching poll layer stubbed for later)
-- [ ] Error taxonomy + StateCache observability (health surface, history)
-- [ ] Tests for classifier + cache behavior
+- [x] Error taxonomy + StateCache observability (health surface, history)
+- [x] Tests for classifier + cache behavior
 - [x] Switch to uv for dependency management (pyproject.toml + uv.lock)
 - [ ] Decide: action endpoints sync (block during VALVE_DELAY) vs. background
       task + poll-for-result. Currently sync. Revisit when building frontend UX.
