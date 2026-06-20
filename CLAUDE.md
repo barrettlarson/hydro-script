@@ -136,6 +136,15 @@ Status legend: [x] done · [~] in progress · [ ] not started
 - [ ] PWA (add-to-home-screen) so family installs without an app store
 - [ ] Frontend tests
 
+## Phase 2.5 — Auth / login (gate before exposing actions)
+
+- [ ] Login UI in the frontend (Phase 2) + auth state handling
+- [ ] Backend: session/token issuance; protect all action + state endpoints
+- [ ] Credential provider returns the server-side `.env` cred for all sessions
+- [ ] Keep the 2 AM safety cron working without an interactive login (it uses
+      the server-side cred directly, independent of any user session)
+- [ ] Tests for auth gating (unauthenticated request is rejected)
+
 ## Phase 3 — SMS notifications [ ]
 
 Notify when pool/spa reaches target temperature.
@@ -144,7 +153,7 @@ Notify when pool/spa reaches target temperature.
 - [ ] Hysteresis / one-shot latch so it doesn't re-fire while hovering at target
 - [ ] SMS delivery (AWS SNS is the natural fit if deploying on AWS; evaluate
       cost + phone-number/verification requirements)
-- [ ] Per-user opt-in / recipient config
+- [ ] Per-recipient opt-in / phone-number config (family members)
 - [ ] Tests for the crossing-detection + latch logic (no real SMS)
 
 ## Phase 4 — Deploy v1 (AWS) [ ]
@@ -159,7 +168,8 @@ AWS is viable because iAquaLink is cloud-only (see architecture fact).
       scheduled Lambda for polling + a separate path for actions. Evaluate cost.
 - [ ] Secrets: credentials in AWS Secrets Manager / SSM, not env files in image
 - [ ] Nightly safety: EventBridge schedule instead of cron
-- [ ] HTTPS + auth on the API (family-only access; don't expose actions openly)
+- [ ] HTTPS + enforce the Phase 2.5 auth gate on the deployed API (don't expose
+      actions openly)
 - [ ] Keep the 2 AM safety as an independent failsafe regardless of session logic
 - [ ] Cost writeup in README
 
@@ -183,7 +193,6 @@ Predict heating duration so user sets "ready by 10am" and backend starts in time
 - Color/effect light control (model-dependent)
 - Failure-trend persistence across restarts (currently in-memory)
 - Per-category backoff/alerting (deferred until real failures observed)
-- Multi-user accounts / auth model beyond simple family access
 
 ## Open questions to resolve on real hardware
 
