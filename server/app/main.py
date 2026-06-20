@@ -4,6 +4,7 @@ Action endpoints call controls.py logic via a fresh iAquaLink connection
 per request. Background polling / StateCache is scaffolded for future work.
 """
 
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from dotenv import load_dotenv
@@ -12,26 +13,17 @@ from iaqualink.client import AqualinkClient
 from pydantic import BaseModel
 
 from app import controls
-from app.aqualink import get_credentials, open_devices, AqualinkError
+from app.aqualink import get_credentials, open_devices
+from app.cache import StateCache
+from app.errors import classify, http_response
 
 load_dotenv()
 
 app = FastAPI()
 
 
-# State cache (stub for future background poller) ---------------
-
-
-class StateCache:
-    """Holds the latest system snapshot and metadata."""
-
-    def __init__(self) -> None:
-        self.state: Optional[dict[str, Any]] = None
-        self.last_success_at: float = 0.0
-        self.last_attempt_at: float = 0.0
-        self.consecutive_failures: int = 0
-
-
+# State cache: populated by status/action requests today; the background
+# poller (future) will write to this same instance.
 cache = StateCache()
 
 
@@ -53,15 +45,29 @@ class ActionResult(BaseModel):
     error: Optional[str] = None
 
 
+def _handle_failure(exc: Exception) -> HTTPException:
+    """Classify, record into the cache, and map to a user-facing HTTP error.
+
+    The real exception text is recorded for development; the caller only
+    sees the category-appropriate public message.
+    """
+    category = classify(exc)
+    cache.record_failure(category, str(exc))
+    status_code, message = http_response(category)
+    return HTTPException(status_code=status_code, detail=message)
+
+
 async def _run_action(name: str) -> list[str]:
     """Open a connection, run the named action, return status messages."""
     try:
         user, pw = get_credentials()
         async with AqualinkClient(user, pw) as client:
             devices = await open_devices(client)
-            return await ACTIONS[name](devices)
-    except AqualinkError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+            messages = await ACTIONS[name](devices)
+        cache.record_success()  # connectivity confirmed; no fresh snapshot
+        return messages
+    except Exception as e:
+        raise _handle_failure(e)
 
 
 async def _get_status() -> dict[str, Any]:
@@ -70,9 +76,11 @@ async def _get_status() -> dict[str, Any]:
         user, pw = get_credentials()
         async with AqualinkClient(user, pw) as client:
             devices = await open_devices(client)
-            return await controls.cmd_status(devices)
-    except AqualinkError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+            result = await controls.cmd_status(devices)
+        cache.record_success(result)
+        return result
+    except Exception as e:
+        raise _handle_failure(e)
 
 
 # Endpoints
@@ -86,6 +94,28 @@ def read_root() -> dict[str, str]:
 @app.get("/api/status")
 async def status() -> dict[str, Any]:
     return await _get_status()
+
+
+def _iso(ts: Optional[float]) -> Optional[str]:
+    """Epoch float -> ISO 8601 UTC string (None passes through)."""
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+@app.get("/api/health")
+async def health() -> dict[str, Any]:
+    """Observability surface: cache status, staleness, failure history.
+
+    Timestamps are converted from internal epoch floats to ISO strings here,
+    at the API edge.
+    """
+    h = cache.health()
+    h["last_success_at"] = _iso(h["last_success_at"])
+    h["last_attempt_at"] = _iso(h["last_attempt_at"])
+    for record in h["recent_failures"]:
+        record["ts"] = _iso(record["ts"])
+    return h
 
 
 @app.post("/api/spa/on", response_model=ActionResult)
