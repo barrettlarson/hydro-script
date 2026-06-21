@@ -38,33 +38,33 @@ poller lands; write/command paths always go live to Jandy.
 Legend:   ──►  built today          ┄►  planned (see roadmap)
 
                        ┌───────────────────────────────┐
-                       │       Jandy iAquaLink cloud    │
-                       │   HTTPS · no local API · rate- │
-                       │            limited             │
+                       │       Jandy iAquaLink cloud   │
+                       │  HTTPS · no local API · rate- │
+                       │            limited            │
                        └───────────────────────────────┘
                          ▲            ▲              ▲
                 commands │   commands │       poll ┄┘ ~30s  [planned]
                          │            │              ┊
                    ┌─────┴────┐ ┌─────┴────┐ ┌───────┴───────┐
                    │  cli.py  │ │ main.py  │ │    poller     │  [planned]
-                   │  cron /  │ │ FastAPI  │ │  background    │
-                   │ scripts  │ │ actions  │ │  loop          │
+                   │  cron /  │ │ FastAPI  │ │  background  │
+                   │ scripts  │ │ actions  │ │     loop     │
                    └─────┬────┘ └─────┬────┘ └───────┬───────┘
                          │            │              ┊ writes snapshot
                          └─────┬──────┘              ▼
                                ▼              ┌───────────────┐
                         ┌────────────┐        │   StateCache  │
-                        │ controls.py│        │  snapshot +    │
-                        │ pure logic │        │  health        │
+                        │ controls.py│        │  snapshot +   │
+                        │ pure logic │        │  health       │
                         └────────────┘        └───────┬───────┘
-                              ▲                        │ read
-                              │ aqualink.py            │
-                       (credentials, open_devices)     │
-                                                       │
-                          GET /api/status ┄┄┄┄┄┄┄┄┄┄┄┄┄┤ (live today;
-                          GET /api/health ─────────────┤  from cache once
-                                                       │  poller lands)
-                                                       ▼
+                              ▲                       │ read
+                              │ aqualink.py           │
+                       (credentials, open_devices)    │
+                                                      │
+                          GET /api/status ┄┄┄┄┄┄┄┄┄┄┄┄┤ (live today;
+                          GET /api/health ────────────┤  from cache once
+                                                      │  poller lands)
+                                                      ▼
                                              ┌──────────────────┐
                                              │  React client    │  [planned]
                                              │    (client/)     │
@@ -159,16 +159,16 @@ just dev
 
 Endpoints:
 
-| Method | Path             | Description                                              |
-| ------ | ---------------- | -------------------------------------------------------- |
-| GET    | `/`              | Liveness check                                           |
-| GET    | `/api/status`    | Current device state + all device keys                   |
-| GET    | `/api/health`    | Observability: cache freshness, staleness, recent failures |
-| POST   | `/api/spa/on`    | Spa startup sequence                                     |
-| POST   | `/api/spa/off`   | Spa shutdown sequence                                    |
-| POST   | `/api/pool/on`   | Pool heater on                                           |
-| POST   | `/api/pool/off`  | Pool heater off                                          |
-| POST   | `/api/safety`    | Idempotent safety shutdown                               |
+| Method | Path            | Description                                                |
+| ------ | --------------- | ---------------------------------------------------------- |
+| GET    | `/`             | Liveness check                                             |
+| GET    | `/api/status`   | Current device state + all device keys                     |
+| GET    | `/api/health`   | Observability: cache freshness, staleness, recent failures |
+| POST   | `/api/spa/on`   | Spa startup sequence                                       |
+| POST   | `/api/spa/off`  | Spa shutdown sequence                                      |
+| POST   | `/api/pool/on`  | Pool heater on                                             |
+| POST   | `/api/pool/off` | Pool heater off                                            |
+| POST   | `/api/safety`   | Idempotent safety shutdown                                 |
 
 Action endpoints currently run **synchronously** and block during the valve
 delay; the background poller and a poll-for-result flow are planned (see the
