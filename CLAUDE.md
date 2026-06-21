@@ -47,9 +47,9 @@ Consequences:
 1. **Logic/interface separation.** Pure logic in `controls.py` (raises
    exceptions, returns values, no print/exit/argv). CLI and FastAPI both import
    it. This is what makes the logic testable.
-2. **Cache decouples clients from upstream.** (target) A single background
-   poller polls Jandy; HTTP requests read an in-memory cache. Client count
-   never multiplies upstream load.
+2. **Cache decouples clients from upstream.** A single background poller
+   (`poller.py`) polls Jandy ~once/30s; HTTP reads (`/api/status`) read an
+   in-memory cache. Client count never multiplies upstream load.
 3. **Failures are categorized, not stringified.** (target) Typed error
    taxonomy with classifier, timestamped records, bounded history. Track +
    classify now; build _reactions_ (backoff, alerts) later once real failures
@@ -125,27 +125,25 @@ Status legend: [x] done · [~] in progress · [ ] not started
 - [x] README with architecture diagram (Jandy cloud → poller → cache → API → UI;
       drawn as a blueprint — built paths solid, poller/cache/client marked planned)
 
-## Phase 1.5 — Background poller + cache read path [ ]
+## Phase 1.5 — Background poller + cache read path [x]
 
-Build the decoupling layer (design principle #2) *before* the web client, so the
+Built the decoupling layer *before* the web client, so the
 first real multi-client load lands on a cache instead of multiplying per-request
-upstream calls. Today the `StateCache` exists for observability only: it's
-written through on each request, and `/api/status` still opens a fresh Jandy
-connection every call. This phase makes a single poller the only thing that
-polls upstream.
+upstream calls. A single poller (`poller.py`) is now the only thing that polls
+upstream; `/api/status` is served from the `StateCache`.
 
-- [ ] Background poller: one async loop started on FastAPI lifespan that polls
+- [x] Background poller: one async loop started on FastAPI lifespan that polls
       Jandy every ~30s and writes snapshots into the shared `StateCache`
-- [ ] Serve reads from cache: `/api/status` (and/or a new `/api/state`) return
-      the cached snapshot instead of opening a per-request connection
-- [ ] Route poller failures through the existing `classify()` /
+- [x] Serve reads from cache: `/api/status` returns the cached snapshot
+      (503 "warming up" before the first successful poll) — no per-request conn
+- [x] Route poller failures through the existing `classify()` /
       `record_failure()` path so health/staleness already surfaces them
-- [ ] Graceful start/stop of the poll task (lifespan startup + shutdown)
-- [ ] No overlapping polls if one runs long; respect the ~30s floor
-- [ ] Actions still go live (commands aren't cached); after an action, trigger a
+- [x] Graceful start/stop of the poll task (lifespan startup + shutdown)
+- [x] No overlapping polls (single sequential loop); ~30s floor between polls
+- [x] Actions still go live (commands aren't cached); after an action, trigger a
       refresh poll so the cache reflects the change quickly
-- [ ] Tests: poller writes cache, reads served without an upstream call, stale
-      handling, action-triggered refresh (fake devices, injected clock)
+- [x] Tests: poller writes cache, reads served without an upstream call, failure
+      classification, action-triggered refresh, lifecycle (fake fetch injected)
 
 ## Phase 2 — Web application [ ]
 
