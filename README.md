@@ -22,20 +22,20 @@ wraps that cloud API. Two consequences shape the design:
   exactly as well as a box on the home network. "Control it away from home" is
   free, not a feature to build.
 - Everything is **cloud-polled** and water temps change slowly, so polling more
-  than ~once/30s buys nothing and risks rate limits. The design is for a single
-  background poller to cache upstream state so client count never multiplies
-  upstream load. The `StateCache` exists today for observability (health,
-  staleness, failure history); the poller that feeds it and the read-from-cache
-  path are the **next build** — see the roadmap.
+  than ~once/30s buys nothing and risks rate limits. A single background poller
+  refreshes the `StateCache` every ~30s and every read (`/api/status`) is served
+  from that cache, so client count never multiplies upstream load. The
+  `StateCache` also carries observability (health, staleness, failure history).
 
-### Data flow (blueprint)
+### Data flow
 
-Solid boxes/arrows are built today; `┄┄` and `[planned]` mark what the roadmap
-schedules next. Reads are served live today and move behind the cache once the
-poller lands; write/command paths always go live to Jandy.
+Solid boxes/arrows are built; `┄┄` and `[planned]` mark what the roadmap
+schedules next (the React client). Reads are served from the cache the poller
+feeds; action/command paths always go live to Jandy and then nudge the poller
+to refresh.
 
 ```
-Legend:   ──►  built today          ┄►  planned (see roadmap)
+Legend:   ──►  built          ┄►  planned (see roadmap)
 
                        ┌───────────────────────────────┐
                        │       Jandy iAquaLink cloud   │
@@ -43,14 +43,14 @@ Legend:   ──►  built today          ┄►  planned (see roadmap)
                        │            limited            │
                        └───────────────────────────────┘
                          ▲            ▲              ▲
-                commands │   commands │       poll ┄┘ ~30s  [planned]
-                         │            │              ┊
+                commands │   commands │       poll ──┘ ~30s
+                         │            │              │
                    ┌─────┴────┐ ┌─────┴────┐ ┌───────┴───────┐
-                   │  cli.py  │ │ main.py  │ │    poller     │  [planned]
+                   │  cli.py  │ │ main.py  │ │    poller     │
                    │  cron /  │ │ FastAPI  │ │  background   │
                    │ scripts  │ │ actions  │ │     loop      │
                    └─────┬────┘ └─────┬────┘ └───────┬───────┘
-                         │            │              ┊ writes snapshot
+                         │            │              │ writes snapshot
                          └─────┬──────┘              ▼
                                ▼              ┌───────────────┐
                         ┌────────────┐        │   StateCache  │
@@ -61,9 +61,8 @@ Legend:   ──►  built today          ┄►  planned (see roadmap)
                               │ aqualink.py           │
                        (credentials, open_devices)    │
                                                       │
-                          GET /api/status ┄┄┄┄┄┄┄┄┄┄┄┄┤ (live today;
-                          GET /api/health ────────────┤  from cache once
-                                                      │  poller lands)
+                          GET /api/status ────────────┤
+                          GET /api/health ────────────┤
                                                       ▼
                                              ┌──────────────────┐
                                              │  React client    │  [planned]
@@ -79,7 +78,8 @@ server/
     aqualink.py   # connection helper: credentials, open_devices, typed errors
     controls.py   # pure logic — spa/pool on-off, status, safety. No print/exit/argv.
     cli.py        # thin CLI wrapper (print/exit/argv) over controls
-    main.py       # FastAPI app: action + status + health endpoints
+    main.py       # FastAPI app: action + status + health endpoints, poller lifespan
+    poller.py     # single background loop: polls Jandy ~30s, writes the StateCache
     errors.py     # error taxonomy: classify(exc) -> FailureCategory, HTTP mapping
     cache.py      # StateCache: last snapshot, staleness, bounded failure history
   tests/          # fake-device tests; no hardware required
@@ -162,7 +162,7 @@ Endpoints:
 | Method | Path            | Description                                                |
 | ------ | --------------- | ---------------------------------------------------------- |
 | GET    | `/`             | Liveness check                                             |
-| GET    | `/api/status`   | Current device state + all device keys                     |
+| GET    | `/api/status`   | Latest cached device snapshot (kept fresh by the poller)   |
 | GET    | `/api/health`   | Observability: cache freshness, staleness, recent failures |
 | POST   | `/api/spa/on`   | Spa startup sequence                                       |
 | POST   | `/api/spa/off`  | Spa shutdown sequence                                      |
@@ -170,12 +170,20 @@ Endpoints:
 | POST   | `/api/pool/off` | Pool heater off                                            |
 | POST   | `/api/safety`   | Idempotent safety shutdown                                 |
 
-Action endpoints currently run **synchronously** and block during the valve
-delay; the background poller and a poll-for-result flow are planned (see the
-roadmap). Failures are run through the error taxonomy in `errors.py`: each is
-classified into a `FailureCategory` (auth / rate_limit / upstream_offline /
-network / config / unknown), recorded in the `StateCache` with its real
-message for debugging, and returned to the caller as a generic,
+A single background **poller** (`poller.py`) is the only thing that polls
+Jandy: started on app lifespan, it refreshes the `StateCache` every ~30s, and
+`/api/status` is served straight from that cache — so client count never
+multiplies upstream load. Before the first successful poll, `/api/status`
+returns `503` (warming up); check `/api/health` for the reason. Until the first
+poll completes (or upstream is unreachable), there is no snapshot to serve.
+
+Action endpoints still run **synchronously** and block during the valve delay
+(a poll-for-result flow is deferred — see the roadmap); they go live to Jandy
+since commands aren't cached, then trigger a refresh poll so the cache reflects
+the change quickly. Failures are run through the error taxonomy in `errors.py`:
+each is classified into a `FailureCategory` (auth / rate_limit /
+upstream_offline / network / config / unknown), recorded in the `StateCache`
+with its real message for debugging, and returned to the caller as a generic,
 category-appropriate HTTP error.
 
 ## Development
