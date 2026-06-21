@@ -22,8 +22,54 @@ wraps that cloud API. Two consequences shape the design:
   exactly as well as a box on the home network. "Control it away from home" is
   free, not a feature to build.
 - Everything is **cloud-polled** and water temps change slowly, so polling more
-  than ~once/30s buys nothing and risks rate limits. The backend is built to
-  cache upstream state and decouple client count from upstream load.
+  than ~once/30s buys nothing and risks rate limits. The design is for a single
+  background poller to cache upstream state so client count never multiplies
+  upstream load. The `StateCache` exists today for observability (health,
+  staleness, failure history); the poller that feeds it and the read-from-cache
+  path are the **next build** — see the roadmap.
+
+### Data flow (blueprint)
+
+Solid boxes/arrows are built today; `┄┄` and `[planned]` mark what the roadmap
+schedules next. Reads are served live today and move behind the cache once the
+poller lands; write/command paths always go live to Jandy.
+
+```
+Legend:   ──►  built today          ┄►  planned (see roadmap)
+
+                       ┌───────────────────────────────┐
+                       │       Jandy iAquaLink cloud    │
+                       │   HTTPS · no local API · rate- │
+                       │            limited             │
+                       └───────────────────────────────┘
+                         ▲            ▲              ▲
+                commands │   commands │       poll ┄┘ ~30s  [planned]
+                         │            │              ┊
+                   ┌─────┴────┐ ┌─────┴────┐ ┌───────┴───────┐
+                   │  cli.py  │ │ main.py  │ │    poller     │  [planned]
+                   │  cron /  │ │ FastAPI  │ │  background    │
+                   │ scripts  │ │ actions  │ │  loop          │
+                   └─────┬────┘ └─────┬────┘ └───────┬───────┘
+                         │            │              ┊ writes snapshot
+                         └─────┬──────┘              ▼
+                               ▼              ┌───────────────┐
+                        ┌────────────┐        │   StateCache  │
+                        │ controls.py│        │  snapshot +    │
+                        │ pure logic │        │  health        │
+                        └────────────┘        └───────┬───────┘
+                              ▲                        │ read
+                              │ aqualink.py            │
+                       (credentials, open_devices)     │
+                                                       │
+                          GET /api/status ┄┄┄┄┄┄┄┄┄┄┄┄┄┤ (live today;
+                          GET /api/health ─────────────┤  from cache once
+                                                       │  poller lands)
+                                                       ▼
+                                             ┌──────────────────┐
+                                             │  React client    │  [planned]
+                                             │    (client/)     │
+                                             └──────────────────┘
+```
 
 The codebase is organized around a strict **logic/interface separation**:
 

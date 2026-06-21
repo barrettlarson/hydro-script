@@ -122,7 +122,30 @@ Status legend: [x] done · [~] in progress · [ ] not started
       task + poll-for-result. Currently sync. Revisit when building frontend UX.
 - [x] justfile recipes for new module paths (cli, uvicorn, pytest)
 - [x] GitHub Actions CI: run pytest + ruff + mypy on push
-- [ ] README with architecture diagram (Jandy cloud → poller → cache → API → UI)
+- [x] README with architecture diagram (Jandy cloud → poller → cache → API → UI;
+      drawn as a blueprint — built paths solid, poller/cache/client marked planned)
+
+## Phase 1.5 — Background poller + cache read path [ ]
+
+Build the decoupling layer (design principle #2) *before* the web client, so the
+first real multi-client load lands on a cache instead of multiplying per-request
+upstream calls. Today the `StateCache` exists for observability only: it's
+written through on each request, and `/api/status` still opens a fresh Jandy
+connection every call. This phase makes a single poller the only thing that
+polls upstream.
+
+- [ ] Background poller: one async loop started on FastAPI lifespan that polls
+      Jandy every ~30s and writes snapshots into the shared `StateCache`
+- [ ] Serve reads from cache: `/api/status` (and/or a new `/api/state`) return
+      the cached snapshot instead of opening a per-request connection
+- [ ] Route poller failures through the existing `classify()` /
+      `record_failure()` path so health/staleness already surfaces them
+- [ ] Graceful start/stop of the poll task (lifespan startup + shutdown)
+- [ ] No overlapping polls if one runs long; respect the ~30s floor
+- [ ] Actions still go live (commands aren't cached); after an action, trigger a
+      refresh poll so the cache reflects the change quickly
+- [ ] Tests: poller writes cache, reads served without an upstream call, stale
+      handling, action-triggered refresh (fake devices, injected clock)
 
 ## Phase 2 — Web application [ ]
 
