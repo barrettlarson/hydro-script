@@ -47,8 +47,8 @@ Legend:   ──►  built today          ┄►  planned (see roadmap)
                          │            │              ┊
                    ┌─────┴────┐ ┌─────┴────┐ ┌───────┴───────┐
                    │  cli.py  │ │ main.py  │ │    poller     │  [planned]
-                   │  cron /  │ │ FastAPI  │ │  background  │
-                   │ scripts  │ │ actions  │ │     loop     │
+                   │  cron /  │ │ FastAPI  │ │  background   │
+                   │ scripts  │ │ actions  │ │     loop      │
                    └─────┬────┘ └─────┬────┘ └───────┬───────┘
                          │            │              ┊ writes snapshot
                          └─────┬──────┘              ▼
