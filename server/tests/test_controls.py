@@ -45,6 +45,17 @@ class TestStatus:
         result = await controls.cmd_status(devices)
         assert result["all_keys"] == sorted(devices.keys())
 
+    async def test_temps(self, devices):
+        """Sensors read as floats; spa_temp reads "" (pump off) -> None."""
+        result = await controls.cmd_status(devices)
+        assert result["temps"] == {"air": 75.0, "pool": 82.0, "spa": None}
+
+    async def test_missing_temp_sensor(self):
+        devs = make_devices()
+        del devs["air_temp"]
+        result = await controls.cmd_status(devs)
+        assert result["temps"]["air"] is None
+
 
 # cmd_spa_on
 

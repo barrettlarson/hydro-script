@@ -29,6 +29,9 @@ def _format_status(data: dict) -> None:
     """Print status dict in the same columnar format as the original CLI."""
     for key, info in data["devices"].items():
         print(f"{key:18s} : {info['label']}")
+    for name, value in data["temps"].items():
+        label = f"{value:g}°F" if value is not None else "(unavailable)"
+        print(f"{name + '_temp':18s} : {label}")
     print(f"\nAll device keys: {', '.join(data['all_keys'])}")
 
 

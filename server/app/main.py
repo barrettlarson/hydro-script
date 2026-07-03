@@ -9,10 +9,12 @@ change quickly.
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from iaqualink.client import AqualinkClient
 from pydantic import BaseModel
 
@@ -107,11 +109,6 @@ async def _run_action(name: str) -> list[str]:
 # Endpoints
 
 
-@app.get("/")
-def read_root() -> dict[str, str]:
-    return {"status": "ok", "message": "hydro-script API"}
-
-
 @app.get("/api/status")
 async def status() -> dict[str, Any]:
     """Return the latest cached snapshot, served without an upstream call.
@@ -178,3 +175,18 @@ async def pool_off() -> ActionResult:
 async def safety() -> ActionResult:
     messages = await _run_action("safety")
     return ActionResult(ok=True, action="safety", messages=messages)
+
+
+# Static client (production).
+# In dev the Vite server proxies /api here, and this mount is absent
+# unless the client has been built. Registered last so /api routes win.
+
+_client_dist = Path(__file__).resolve().parents[2] / "client" / "dist"
+
+if _client_dist.is_dir():
+    app.mount("/", StaticFiles(directory=_client_dist, html=True), name="client")
+else:
+
+    @app.get("/")
+    def read_root() -> dict[str, str]:
+        return {"status": "ok", "message": "hydro-script API (no built client found)"}

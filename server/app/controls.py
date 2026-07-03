@@ -5,12 +5,11 @@ No print, sys.exit, or argv — CLI and FastAPI both import this.
 """
 
 import asyncio
-from typing import Any
+from typing import Any, Optional
 
 from app.aqualink import require
 
 # ---- Configuration -------------------------------------------------
-VALVE_DELAY = 30  # seconds before heater fires on startup; may be reducible
 COOLDOWN_DELAY = 5  # seconds to purge heat exchanger after heater-off
 SPA_SET_POINT = 102  # desired spa temperature (deg F); set None to skip
 POOL_SET_POINT = 84  # desired pool temperature (deg F); set None to skip
@@ -23,7 +22,27 @@ SPA_SETPOINT_DEV = "spa_set_point"
 
 POOL_HEATER = "pool_heater"
 POOL_SETPOINT_DEV = "pool_set_point"
+
+# Temperature sensors (read-only). Verify key names against real `status` output.
+TEMP_SENSORS = {"air": "air_temp", "pool": "pool_temp", "spa": "spa_temp"}
 # --------------------------------------------------------------------
+
+
+def _temp_value(dev: Any) -> Optional[float]:
+    """Numeric reading from a temp sensor, or None if absent/unavailable.
+
+    Sensors report state as a string and read empty when the relevant pump
+    is off (no water flowing past the probe), so "" maps to None.
+    """
+    if dev is None:
+        return None
+    state = getattr(dev, "state", None)
+    if state is None:
+        return None
+    try:
+        return float(state)
+    except ValueError:
+        return None
 
 
 async def cmd_status(devices: dict[str, Any]) -> dict[str, Any]:
@@ -43,11 +62,12 @@ async def cmd_status(devices: dict[str, Any]) -> dict[str, Any]:
         else:
             label = f"state={state}"
         result[key] = {"state": state, "label": label}
-    return {"devices": result, "all_keys": sorted(devices.keys())}
+    temps = {name: _temp_value(devices.get(key)) for name, key in TEMP_SENSORS.items()}
+    return {"devices": result, "temps": temps, "all_keys": sorted(devices.keys())}
 
 
 async def cmd_spa_on(devices: dict[str, Any]) -> list[str]:
-    """Enable spa mode with valve delay and heater sequencing."""
+    """Enable spa mode and heater."""
     messages: list[str] = []
     spa = require(devices, SPA_DEVICE)
     heater = require(devices, SPA_HEATER)
@@ -66,9 +86,6 @@ async def cmd_spa_on(devices: dict[str, Any]) -> list[str]:
         if sp is not None:
             messages.append(f"Setting spa set point to {SPA_SET_POINT}°F...")
             await sp.set_temperature(SPA_SET_POINT)
-
-    messages.append(f"Waiting {VALVE_DELAY}s for valves to actuate and flow to establish...")
-    await asyncio.sleep(VALVE_DELAY)
 
     messages.append("Enabling spa heater...")
     if not heater.is_on:

@@ -56,7 +56,7 @@ Consequences:
    have been observed. Don't over-fit exception mapping to guesses.
 4. **Time stored as epoch floats internally; ISO strings only at the API edge.**
 5. **Tests use fake devices** — no hardware needed. Delays monkeypatched out
-   so suite runs in <1s. (not yet implemented)
+   so suite runs in <1s.
 6. Keep responses/code reviewable: small modules, type hints, docstrings that
    explain _why_.
 
@@ -67,12 +67,18 @@ server/
   app/
     __init__.py
     aqualink.py   # connection helper (credentials, open_devices, require)
-    controls.py   # pure logic: spa/pool on-off, status read, safety
+    controls.py   # pure logic: spa/pool on-off, status read (incl. temps), safety
     cli.py        # thin CLI wrapper (print/exit/argv)
-    main.py       # FastAPI: action endpoints, status, health
-  tests/
-    test_controls.py  # (empty, tests not yet written)
-client/               # (future) React + TypeScript frontend
+    main.py       # FastAPI: action endpoints, status, health; serves client/dist
+    poller.py     # single background poll loop feeding the StateCache
+    errors.py     # error taxonomy: classify(exc) -> FailureCategory
+    cache.py      # StateCache: snapshot, staleness, failure history
+  tests/          # fake-device tests (controls, cache, errors, poller)
+client/           # React + TypeScript PWA (Vite): mobile-first UI over the API
+  src/
+    api.ts             # typed API client (same-origin /api)
+    usePolledState.ts  # polls status+health every 15s, pauses when hidden
+    App.tsx            # temps, spa/pool cards, health indicator
 CLAUDE.md
 README.md
 justfile              # task runner (cross-platform)
@@ -85,9 +91,11 @@ uv.lock               # lockfile for reproducible installs
 
 ```
 just spa-on / spa-off / pool-on / pool-off / status / safety
+just server                # FastAPI dev server (uvicorn --reload, :8000)
+just client                # Vite dev server (:5173, proxies /api to :8000)
+just client-build          # production client build into client/dist
+just check                 # ruff + mypy + pytest
 PYTHONPATH=server python -m app.cli [spa-on|spa-off|pool-on|pool-off|status|safety]
-PYTHONPATH=server uvicorn app.main:app --reload   # dev server
-pytest                                             # test suite (no tests yet)
 ```
 
 Cron (deploy target, Linux): nightly safety shutoff
@@ -118,8 +126,9 @@ Status legend: [x] done · [~] in progress · [ ] not started
 - [x] Error taxonomy + StateCache observability (health surface, history)
 - [x] Tests for classifier + cache behavior
 - [x] Switch to uv for dependency management (pyproject.toml + uv.lock)
-- [ ] Decide: action endpoints sync (block during VALVE_DELAY) vs. background
-      task + poll-for-result. Currently sync. Revisit when building frontend UX.
+- [x] Decide: action endpoints sync vs. background task + poll-for-result.
+      Resolved: sync. The valve delay was removed (AquaLink stages valve
+      actuation internally), so actions return quickly and sync is fine.
 - [x] justfile recipes for new module paths (cli, uvicorn, pytest)
 - [x] GitHub Actions CI: run pytest + ruff + mypy on push
 - [x] README with architecture diagram (Jandy cloud → poller → cache → API → UI;
@@ -145,16 +154,23 @@ upstream; `/api/status` is served from the `StateCache`.
 - [x] Tests: poller writes cache, reads served without an upstream call, failure
       classification, action-triggered refresh, lifecycle (fake fetch injected)
 
-## Phase 2 — Web application [ ]
+## Phase 2 — Web application [~]
 
-- [ ] React + TypeScript frontend (client/)
-- [ ] Read path first: poll /api/state, render temps + on/off states + health
-- [ ] On/off controls for spa + pool wired to action endpoints
-- [ ] Handle the sync-action delay in UX (loading state or optimistic + poll)
-- [ ] Health/staleness indicator in UI (uses the observability surface)
+- [x] React + TypeScript frontend (client/, Vite; `just client` to run)
+- [x] Read path first: poll /api/status, render temps + on/off states + health
+      (temps added to the status payload: `temps.air/pool/spa`, null when the
+      sensor is absent or reads empty)
+- [x] On/off controls for spa + pool wired to action endpoints
+- [x] Handle action delay in UX: actions are sync but fast now (valve delay
+      removed — AquaLink stages valves internally); button shows a spinner and
+      the app re-polls after the action
+- [x] Health/staleness indicator in UI (Live/Stale/Offline from /api/health)
+- [x] No CORS anywhere: Vite dev proxy for /api; in prod FastAPI serves
+      client/dist same-origin
 - [ ] Aux controls: lights + bubbles (blower) on/off — confirm aux_N mapping
       from status first. Color/effects deferred (model-dependent).
-- [ ] PWA (add-to-home-screen) so family installs without an app store
+- [x] PWA (add-to-home-screen) so family installs without an app store
+      (vite-plugin-pwa; app shell precached, /api never cached by the SW)
 - [ ] Frontend tests
 
 ## Phase 2.5 — Auth / login (gate before exposing actions)
@@ -219,5 +235,4 @@ Predict heating duration so user sets "ready by 10am" and backend starts in time
 
 - Exact temp device key names (air/pool/spa)
 - aux_N → light/bubble/waterfall mapping
-- Whether VALVE_DELAY is reducible (does AquaLink stage spa-on internally?)
 - What real failure exception types the library raises (to tighten classify())
