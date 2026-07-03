@@ -1,12 +1,26 @@
-import { useState } from 'react'
-import { postAction, type Health, type Status } from './api'
-import { usePolledState } from './usePolledState'
+import { useEffect, useRef, useState } from "react";
+import { postAction, postTemp, type Health, type Status } from "./api";
+import { usePolledState } from "./usePolledState";
 
 function isOn(status: Status | null, key: string): boolean {
-  return status?.devices[key]?.label === 'ON'
+  return status?.devices[key]?.label === "ON";
 }
 
-function TempTile({ label, value }: { label: string; value: number | null | undefined }) {
+/** Parse a set-point device's state ("102") to a number, or null. */
+function setpointOf(status: Status | null, key: string): number | null {
+  const raw = status?.devices[key]?.state;
+  if (raw == null || raw === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+function TempTile({
+  label,
+  value,
+}: {
+  label: string;
+  value: number | null | undefined;
+}) {
   return (
     <div className="temp-tile">
       <span className="temp-label">{label}</span>
@@ -17,93 +31,221 @@ function TempTile({ label, value }: { label: string; value: number | null | unde
             <span className="temp-unit">°F</span>
           </>
         ) : (
-          '—'
+          "—"
         )}
       </span>
     </div>
-  )
+  );
 }
 
 function HealthDot({ health }: { health: Health | null }) {
-  const level = health?.status ?? 'down'
+  const level = health?.status ?? "down";
   const title =
-    level === 'ok'
-      ? 'Connected'
-      : level === 'degraded'
-        ? 'Connection degraded — data may be stale'
-        : 'Not connected'
+    level === "ok"
+      ? "Connected"
+      : level === "degraded"
+        ? "Connection degraded — data may be stale"
+        : "Not connected";
   return (
     <span className={`health health-${level}`} title={title}>
       <span className="health-dot" aria-hidden="true" />
-      {level === 'ok' ? 'Live' : level === 'degraded' ? 'Stale' : 'Offline'}
+      {level === "ok" ? "Live" : level === "degraded" ? "Stale" : "Offline"}
     </span>
-  )
+  );
+}
+
+/** Delay before a stepper-tapped set point is sent, so taps coalesce. */
+const STEPPER_COMMIT_MS = 900;
+
+interface TempSliderProps {
+  zone: "spa" | "pool";
+  /** Committed set point from the server, null until known. */
+  value: number | null;
+  range: [number, number];
+  disabled: boolean;
+  onCommit: (temp: number) => void;
+}
+
+/**
+ * Wet-hands-friendly set point control: a fat-thumb slider that commits once
+ * on release (no precision taps), plus big +/- steppers whose taps coalesce
+ * into a single request. The draft value shows instantly and holds until the
+ * server confirms it (or the request fails and the draft is cleared).
+ */
+function TempSlider({
+  zone,
+  value,
+  range,
+  disabled,
+  onCommit,
+}: TempSliderProps) {
+  const [draft, setDraft] = useState<number | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [lo, hi] = range;
+  const shown = draft ?? value;
+
+  // Server caught up with the draft — hand display back to server state.
+  useEffect(() => {
+    if (draft !== null && value === draft) setDraft(null);
+  }, [value, draft]);
+
+  useEffect(() => () => clearTimeout(timer.current ?? undefined), []);
+
+  const commit = (temp: number) => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+    if (temp !== value) onCommit(temp);
+  };
+
+  // Steppers and keyboard arrows adjust one degree at a time, so their
+  // commits are debounced to coalesce a burst of taps into one request.
+  const scheduleCommit = (temp: number) => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => commit(temp), STEPPER_COMMIT_MS);
+  };
+
+  const step = (delta: number) => {
+    const base = shown ?? Math.round((lo + hi) / 2);
+    const next = Math.min(hi, Math.max(lo, base + delta));
+    setDraft(next);
+    scheduleCommit(next);
+  };
+
+  return (
+    <div className="setpoint">
+      <button
+        type="button"
+        className="step-button"
+        aria-label={`Lower ${zone} target`}
+        disabled={disabled || shown === null || shown <= lo}
+        onClick={() => step(-1)}
+      >
+        −
+      </button>
+      <input
+        type="range"
+        className="setpoint-slider"
+        min={lo}
+        max={hi}
+        step={1}
+        value={shown ?? lo}
+        disabled={disabled || value === null}
+        aria-label={`${zone} target temperature`}
+        onChange={(e) => setDraft(Number(e.target.value))}
+        onPointerUp={() => draft !== null && commit(draft)}
+        onKeyUp={() => draft !== null && scheduleCommit(draft)}
+      />
+      <button
+        type="button"
+        className="step-button"
+        aria-label={`Raise ${zone} target`}
+        disabled={disabled || shown === null || shown >= hi}
+        onClick={() => step(1)}
+      >
+        +
+      </button>
+      <span className="setpoint-value">
+        {shown !== null ? `${shown}°` : "—"}
+      </span>
+    </div>
+  );
 }
 
 interface ZoneCardProps {
-  name: string
-  on: boolean
-  detail: string
-  pending: boolean
-  disabled: boolean
-  onToggle: () => void
+  name: string;
+  on: boolean;
+  detail: string;
+  pending: boolean;
+  disabled: boolean;
+  onToggle: () => void;
+  children?: React.ReactNode;
 }
 
-function ZoneCard({ name, on, detail, pending, disabled, onToggle }: ZoneCardProps) {
+function ZoneCard({
+  name,
+  on,
+  detail,
+  pending,
+  disabled,
+  onToggle,
+  children,
+}: ZoneCardProps) {
   return (
-    <section className={`zone-card${on ? ' zone-on' : ''}`}>
-      <div className="zone-info">
-        <h2>{name}</h2>
-        <p className="zone-detail">{detail}</p>
+    <section className={`zone-card${on ? " zone-on" : ""}`}>
+      <div className="zone-row">
+        <div className="zone-info">
+          <h2>{name}</h2>
+          <p className="zone-detail">{detail}</p>
+        </div>
+        <button
+          type="button"
+          className={`zone-button${on ? " on" : ""}`}
+          disabled={disabled}
+          onClick={onToggle}
+          aria-busy={pending}
+        >
+          {pending ? (
+            <span className="spinner" aria-label="Working…" />
+          ) : on ? (
+            "Turn off"
+          ) : (
+            "Turn on"
+          )}
+        </button>
       </div>
-      <button
-        type="button"
-        className={`zone-button${on ? ' on' : ''}`}
-        disabled={disabled}
-        onClick={onToggle}
-        aria-busy={pending}
-      >
-        {pending ? <span className="spinner" aria-label="Working…" /> : on ? 'Turn off' : 'Turn on'}
-      </button>
+      {children}
     </section>
-  )
+  );
 }
+
+type Pending = "spa" | "pool" | "pump" | "spa-temp" | "pool-temp" | null;
 
 export default function App() {
-  const { status, health, warmingUp, pollError, refresh } = usePolledState()
-  const [pending, setPending] = useState<'spa' | 'pool' | null>(null)
-  const [actionError, setActionError] = useState<string | null>(null)
+  const { status, health, warmingUp, pollError, refresh } = usePolledState();
+  const [pending, setPending] = useState<Pending>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  const spaOn = isOn(status, 'spa_pump')
-  const spaHeaterOn = isOn(status, 'spa_heater')
-  const poolHeaterOn = isOn(status, 'pool_heater')
-  const spaSetpoint = status?.devices['spa_set_point']?.label
-  const poolSetpoint = status?.devices['pool_set_point']?.label
+  const spaOn = isOn(status, "spa_pump");
+  const spaHeaterOn = isOn(status, "spa_heater");
+  const poolHeaterOn = isOn(status, "pool_heater");
+  const pumpOn = isOn(status, "pool_pump");
+  const spaSetpoint = setpointOf(status, "spa_set_point");
+  const poolSetpoint = setpointOf(status, "pool_set_point");
 
-  async function toggle(zone: 'spa' | 'pool', currentlyOn: boolean) {
-    setPending(zone)
-    setActionError(null)
+  async function run(
+    tag: Exclude<Pending, null>,
+    call: () => Promise<unknown>,
+  ) {
+    setPending(tag);
+    setActionError(null);
     try {
-      await postAction(`${zone}/${currentlyOn ? 'off' : 'on'}`)
-      await refresh()
+      await call();
+      await refresh();
       // The backend triggers its own refresh poll after an action; poll once
       // more shortly after so the UI picks up the settled state.
-      setTimeout(() => void refresh(), 3000)
+      setTimeout(() => void refresh(), 3000);
     } catch (e) {
-      setActionError(e instanceof Error ? e.message : String(e))
+      setActionError(e instanceof Error ? e.message : String(e));
     } finally {
-      setPending(null)
+      setPending(null);
     }
   }
 
+  const toggle = (zone: "spa" | "pool" | "pump", currentlyOn: boolean) =>
+    run(zone, () => postAction(`${zone}/${currentlyOn ? "off" : "on"}`));
+  const setTemp = (zone: "spa" | "pool", temp: number) =>
+    run(`${zone}-temp`, () => postTemp(zone, temp));
+
+  const busy = pending !== null || status === null;
+
   const spaDetail = spaOn
     ? spaHeaterOn
-      ? `Heating${spaSetpoint ? ` to ${spaSetpoint}` : ''}`
-      : 'Spa mode on'
-    : 'Off'
+      ? `Heating${spaSetpoint ? ` to ${spaSetpoint}°F` : ""}`
+      : "Spa mode on"
+    : "Off";
   const poolDetail = poolHeaterOn
-    ? `Heating${poolSetpoint ? ` to ${poolSetpoint}` : ''}`
-    : 'Heater off'
+    ? `Heating${poolSetpoint ? ` to ${poolSetpoint}°F` : ""}`
+    : "Heater off";
 
   return (
     <div className="app">
@@ -113,9 +255,13 @@ export default function App() {
       </header>
 
       {actionError && <div className="banner banner-error">{actionError}</div>}
-      {!actionError && pollError && <div className="banner banner-error">{pollError}</div>}
+      {!actionError && pollError && (
+        <div className="banner banner-error">{pollError}</div>
+      )}
       {warmingUp && !status && (
-        <div className="banner">Warming up — waiting for the first reading from the pool…</div>
+        <div className="banner">
+          Warming up — waiting for the first reading from the pool…
+        </div>
       )}
 
       <section className="temps" aria-label="Temperatures">
@@ -128,24 +274,48 @@ export default function App() {
         name="Spa"
         on={spaOn}
         detail={spaDetail}
-        pending={pending === 'spa'}
-        disabled={pending !== null || status === null}
-        onToggle={() => void toggle('spa', spaOn)}
-      />
+        pending={pending === "spa"}
+        disabled={busy}
+        onToggle={() => void toggle("spa", spaOn)}
+      >
+        <TempSlider
+          zone="spa"
+          value={spaSetpoint}
+          range={status?.setpoint_ranges.spa ?? [90, 104]}
+          disabled={busy}
+          onCommit={(t) => void setTemp("spa", t)}
+        />
+      </ZoneCard>
       <ZoneCard
         name="Pool"
         on={poolHeaterOn}
         detail={poolDetail}
-        pending={pending === 'pool'}
-        disabled={pending !== null || status === null}
-        onToggle={() => void toggle('pool', poolHeaterOn)}
+        pending={pending === "pool"}
+        disabled={busy}
+        onToggle={() => void toggle("pool", poolHeaterOn)}
+      >
+        <TempSlider
+          zone="pool"
+          value={poolSetpoint}
+          range={status?.setpoint_ranges.pool ?? [76, 90]}
+          disabled={busy}
+          onCommit={(t) => void setTemp("pool", t)}
+        />
+      </ZoneCard>
+      <ZoneCard
+        name="Filter pump"
+        on={pumpOn}
+        detail={pumpOn ? "Running" : "Off"}
+        pending={pending === "pump"}
+        disabled={busy}
+        onToggle={() => void toggle("pump", pumpOn)}
       />
 
       <footer className="app-footer">
         {health?.last_success_at
           ? `Updated ${new Date(health.last_success_at).toLocaleTimeString()}`
-          : 'Waiting for first update…'}
+          : "Waiting for first update…"}
       </footer>
     </div>
-  )
+  );
 }

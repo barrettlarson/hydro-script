@@ -46,6 +46,7 @@ def make_devices(**overrides: dict[str, Any]) -> dict[str, FakeDevice]:
         "spa_set_point": {"state": "102"},
         "pool_heater": {"is_on": False, "state": "0"},
         "pool_set_point": {"state": "84"},
+        "pool_pump": {"is_on": True, "state": "1"},
         "air_temp": {"state": "75"},
         "pool_temp": {"state": "82"},
         "spa_temp": {"state": ""},

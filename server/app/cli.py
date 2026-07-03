@@ -20,6 +20,8 @@ COMMANDS = {
     "spa-off": controls.cmd_spa_off,
     "pool-on": controls.cmd_pool_on,
     "pool-off": controls.cmd_pool_off,
+    "pump-on": controls.cmd_pump_on,
+    "pump-off": controls.cmd_pump_off,
     "status": controls.cmd_status,
     "safety": controls.cmd_safety,
 }

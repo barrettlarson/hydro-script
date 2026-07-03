@@ -56,6 +56,98 @@ class TestStatus:
         result = await controls.cmd_status(devs)
         assert result["temps"]["air"] is None
 
+    async def test_includes_filter_pump(self, devices):
+        result = await controls.cmd_status(devices)
+        assert result["devices"]["pool_pump"]["label"] == "ON"
+
+    async def test_setpoint_ranges(self, devices):
+        """Ranges are surfaced so the client can bound its sliders."""
+        result = await controls.cmd_status(devices)
+        assert result["setpoint_ranges"] == {
+            "spa": controls.SPA_SETPOINT_RANGE,
+            "pool": controls.POOL_SETPOINT_RANGE,
+        }
+
+
+# cmd_set_spa_temp / cmd_set_pool_temp
+
+
+class TestSetTemp:
+    async def test_set_spa_temp(self, devices):
+        messages = await controls.cmd_set_spa_temp(devices, 100)
+        assert devices["spa_set_point"].state == "100"
+        assert "Spa set point set to 100°F." in messages
+
+    async def test_set_pool_temp(self, devices):
+        messages = await controls.cmd_set_pool_temp(devices, 80)
+        assert devices["pool_set_point"].state == "80"
+        assert "Pool set point set to 80°F." in messages
+
+    @pytest.mark.parametrize("temp", [89, 105])
+    async def test_spa_out_of_range_rejected(self, devices, temp):
+        with pytest.raises(ValueError, match="90-104"):
+            await controls.cmd_set_spa_temp(devices, temp)
+        assert devices["spa_set_point"].calls == []
+
+    @pytest.mark.parametrize("temp", [71, 91])
+    async def test_pool_out_of_range_rejected(self, devices, temp):
+        with pytest.raises(ValueError, match="76-90"):
+            await controls.cmd_set_pool_temp(devices, temp)
+        assert devices["pool_set_point"].calls == []
+
+    async def test_bounds_are_inclusive(self, devices):
+        await controls.cmd_set_spa_temp(devices, 104)
+        await controls.cmd_set_pool_temp(devices, 76)
+        assert devices["spa_set_point"].state == "104"
+        assert devices["pool_set_point"].state == "76"
+
+    async def test_missing_setpoint_device_raises(self):
+        devs = make_devices()
+        del devs["spa_set_point"]
+        with pytest.raises(DeviceNotFound, match="spa_set_point"):
+            await controls.cmd_set_spa_temp(devs, 100)
+
+    async def test_does_not_touch_on_off_state(self, devices):
+        await controls.cmd_set_spa_temp(devices, 100)
+        assert not devices["spa_pump"].is_on
+        assert not devices["spa_heater"].is_on
+
+
+# cmd_pump_on / cmd_pump_off
+
+
+class TestPump:
+    async def test_pump_on(self):
+        devs = make_devices(pool_pump={"is_on": False})
+        messages = await controls.cmd_pump_on(devs)
+        assert devs["pool_pump"].is_on
+        assert "Filter pump is on." in messages
+
+    async def test_pump_on_already_on(self, devices):
+        await controls.cmd_pump_on(devices)
+        assert "turn_on" not in devices["pool_pump"].calls
+
+    async def test_pump_off(self, devices):
+        messages = await controls.cmd_pump_off(devices)
+        assert not devices["pool_pump"].is_on
+        assert "Filter pump is off." in messages
+
+    async def test_pump_off_already_off(self):
+        devs = make_devices(pool_pump={"is_on": False})
+        await controls.cmd_pump_off(devs)
+        assert "turn_off" not in devs["pool_pump"].calls
+
+    async def test_missing_pump_raises(self, devices):
+        del devices["pool_pump"]
+        with pytest.raises(DeviceNotFound, match="pool_pump"):
+            await controls.cmd_pump_on(devices)
+
+    async def test_safety_leaves_pump_alone(self, devices):
+        """Filtration must keep running through the nightly safety shutoff."""
+        await controls.cmd_safety(devices)
+        assert devices["pool_pump"].is_on
+        assert devices["pool_pump"].calls == []
+
 
 # cmd_spa_on
 

@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
@@ -35,5 +36,11 @@ export default defineConfig({
     proxy: {
       '/api': 'http://127.0.0.1:8000',
     },
+  },
+  test: {
+    environment: 'jsdom',
+    setupFiles: './src/test/setup.ts',
+    // e2e specs run under Playwright, not vitest
+    exclude: ['e2e/**', 'node_modules/**'],
   },
 })
