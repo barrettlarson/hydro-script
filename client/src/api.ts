@@ -19,6 +19,7 @@ export interface Temps {
 export interface Status {
   devices: Record<string, DeviceInfo>
   temps: Temps
+  setpoint_ranges: { spa: [number, number]; pool: [number, number] }
   all_keys: string[]
 }
 
@@ -46,7 +47,7 @@ export interface ActionResult {
   error: string | null
 }
 
-export type ActionPath = 'spa/on' | 'spa/off' | 'pool/on' | 'pool/off'
+export type ActionPath = 'spa/on' | 'spa/off' | 'pool/on' | 'pool/off' | 'pump/on' | 'pump/off'
 
 export class ApiError extends Error {
   readonly status: number
@@ -77,3 +78,9 @@ export const getStatus = () => request<Status>('/api/status')
 export const getHealth = () => request<Health>('/api/health')
 export const postAction = (path: ActionPath) =>
   request<ActionResult>(`/api/${path}`, { method: 'POST' })
+export const postTemp = (zone: 'spa' | 'pool', temp: number) =>
+  request<ActionResult>(`/api/${zone}/temp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ temp }),
+  })

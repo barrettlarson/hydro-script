@@ -94,6 +94,8 @@ just spa-on / spa-off / pool-on / pool-off / status / safety
 just server                # FastAPI dev server (uvicorn --reload, :8000)
 just client                # Vite dev server (:5173, proxies /api to :8000)
 just client-build          # production client build into client/dist
+just client-test           # vitest (jsdom)
+just client-e2e            # Playwright (mocked /api, needs chromium installed)
 just check                 # ruff + mypy + pytest
 PYTHONPATH=server python -m app.cli [spa-on|spa-off|pool-on|pool-off|status|safety]
 ```
@@ -167,11 +169,20 @@ upstream; `/api/status` is served from the `StateCache`.
 - [x] Health/staleness indicator in UI (Live/Stale/Offline from /api/health)
 - [x] No CORS anywhere: Vite dev proxy for /api; in prod FastAPI serves
       client/dist same-origin
+- [x] Target-temp sliders for spa + pool: POST /api/spa/temp + /api/pool/temp,
+      bounds-checked against system-specific SPA/POOL_SETPOINT_RANGE (served in
+      /api/status so sliders and server agree). Wet-hands UX: slider commits
+      once on release; +/− steppers debounce-coalesce taps into one request.
+- [x] Filter pump (pool_pump) toggle: POST /api/pump/on|off, CLI pump-on/off,
+      shown in status. Safety still never touches the pump.
 - [ ] Aux controls: lights + bubbles (blower) on/off — confirm aux_N mapping
       from status first. Color/effects deferred (model-dependent).
 - [x] PWA (add-to-home-screen) so family installs without an app store
       (vite-plugin-pwa; app shell precached, /api never cached by the SW)
-- [ ] Frontend tests
+- [x] Frontend tests: vitest + testing-library (client/src/test/) and
+      Playwright e2e with /api mocked in-browser (client/e2e/, mobile +
+      desktop projects). Backend endpoint tests in server/tests/test_main.py
+      (fake connection layer). All wired into CI.
 
 ## Phase 2.5 — Auth / login (gate before exposing actions)
 

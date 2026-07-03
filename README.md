@@ -120,6 +120,8 @@ just spa-on     # enable spa mode, set temp, wait for valves, turn on heater
 just spa-off    # turn off heater, purge heat exchanger, disable spa mode
 just pool-on    # turn on pool heater
 just pool-off   # turn off pool heater
+just pump-on    # turn on the filter pump
+just pump-off   # turn off the filter pump
 just status     # print current state + all discovered device keys
 just safety     # shut down only if spa/pool is currently on (for cron)
 ```
@@ -129,7 +131,7 @@ Or directly via the module (the CLI lives in `app.cli`, with `PYTHONPATH=server`
 ```bash
 PYTHONPATH=server python -m app.cli spa-on
 PYTHONPATH=server python -m app.cli status
-# ... spa-off | pool-on | pool-off | safety
+# ... spa-off | pool-on | pool-off | pump-on | pump-off | safety
 ```
 
 Install `just` on Windows: `winget install Casey.Just`
@@ -164,6 +166,10 @@ Endpoints:
 | POST   | `/api/spa/off`  | Spa shutdown sequence                                      |
 | POST   | `/api/pool/on`  | Pool heater on                                             |
 | POST   | `/api/pool/off` | Pool heater off                                            |
+| POST   | `/api/pump/on`  | Filter pump on                                             |
+| POST   | `/api/pump/off` | Filter pump off                                            |
+| POST   | `/api/spa/temp` | Set spa target temp (JSON `{"temp": N}`, bounds-checked)   |
+| POST   | `/api/pool/temp`| Set pool target temp (JSON `{"temp": N}`, bounds-checked)  |
 | POST   | `/api/safety`   | Idempotent safety shutdown                                 |
 
 A single background **poller** (`poller.py`) is the only thing that polls
@@ -186,14 +192,22 @@ category-appropriate HTTP error.
 ## Web client
 
 A mobile-first React + TypeScript PWA in `client/` (Vite). It shows air/pool/spa
-temperatures, spa and pool state with on/off controls, a live/stale/offline
-health indicator, and installs to a phone home screen (add-to-home-screen —
-no app store).
+temperatures, spa/pool/filter-pump state with on/off controls, target
+temperature sliders, a live/stale/offline health indicator, and installs to a
+phone home screen (add-to-home-screen — no app store).
+
+The set point controls are designed for wet hands: a fat-thumb slider that
+sends **one** request when released (nothing mid-drag), and big +/− steppers
+whose taps coalesce into a single debounced request. Slider bounds come from
+the backend (`setpoint_ranges` in `/api/status`), so the UI and the server
+always agree on the allowed range.
 
 ```bash
 just client        # Vite dev server on :5173, proxies /api to FastAPI on :8000
 just client-build  # production build into client/dist
 just client-lint   # oxlint
+just client-test   # vitest unit/component tests (jsdom)
+just client-e2e    # Playwright end-to-end tests (mocked /api, no backend)
 ```
 
 For development run `just server` (API) and `just client` (UI) side by side —
@@ -215,8 +229,15 @@ just typecheck     # mypy
 just check         # lint + format-check + typecheck + test
 ```
 
-CI runs the same checks (ruff, mypy, pytest) on push — see
+CI runs the backend checks (ruff, mypy, pytest) and the client checks
+(oxlint, vitest, build, Playwright) on push — see
 [.github/workflows/ci.yml](.github/workflows/ci.yml).
+
+Test layout: `server/tests/` covers pure logic (fake devices) and the API
+endpoints (fake connection layer, `test_main.py`); `client/src/test/` covers
+the API client and components under vitest/jsdom; `client/e2e/` drives the
+real app in a browser with `/api` mocked at the network layer, on both a
+mobile (Pixel 7) and desktop viewport.
 
 ## Configuration
 
@@ -224,6 +245,11 @@ Edit the constants at the top of [server/app/controls.py](server/app/controls.py
 
 - `COOLDOWN_DELAY`: Seconds to keep the pump running after the heater turns off,
   to purge the heat exchanger before stopping flow.
+- `SPA_SETPOINT_RANGE` / `POOL_SETPOINT_RANGE`: System-specific bounds (°F) for
+  target temps. Enforced on the set-temp endpoints and served to the client to
+  bound its sliders.
+- `FILTER_PUMP`: Device key for the main filtration pump (never touched by
+  `safety`).
 - `SPA_SET_POINT`: Target spa temperature in °F. Set to `None` to skip.
 - `SPA_DEVICE`: Device key for the spa mode toggle.
 - `SPA_HEATER`: Device key for the spa heater.

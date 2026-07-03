@@ -64,6 +64,8 @@ ACTIONS: dict[str, Any] = {
     "spa-off": controls.cmd_spa_off,
     "pool-on": controls.cmd_pool_on,
     "pool-off": controls.cmd_pool_off,
+    "pump-on": controls.cmd_pump_on,
+    "pump-off": controls.cmd_pump_off,
     "safety": controls.cmd_safety,
 }
 
@@ -73,6 +75,21 @@ class ActionResult(BaseModel):
     action: str
     messages: list[str] = []
     error: Optional[str] = None
+
+
+class TempRequest(BaseModel):
+    temp: int
+
+
+def _validate_setpoint(temp: int, bounds: tuple[int, int]) -> None:
+    """Reject an out-of-bounds set point before any connection is opened.
+
+    Bounds are the system-specific ranges from controls.py — the same ones
+    the client reads from /api/status to bound its sliders.
+    """
+    lo, hi = bounds
+    if not lo <= temp <= hi:
+        raise HTTPException(status_code=422, detail=f"Set point must be {lo}-{hi}°F.")
 
 
 def _handle_failure(exc: Exception) -> HTTPException:
@@ -87,18 +104,21 @@ def _handle_failure(exc: Exception) -> HTTPException:
     return HTTPException(status_code=status_code, detail=message)
 
 
-async def _run_action(name: str) -> list[str]:
-    """Open a connection, run the named action, return status messages.
+async def _run_action(name: str, fn: Optional[Any] = None) -> list[str]:
+    """Open a connection, run an action against it, return status messages.
 
+    `fn` defaults to the named entry in ACTIONS; endpoints with extra
+    parameters (set points) pass a closure over the devices dict instead.
     Actions go live to Jandy (commands aren't cached). On success we confirm
     connectivity in the cache and ask the poller to refresh so the cached
     snapshot reflects the change quickly.
     """
+    run = fn if fn is not None else ACTIONS[name]
     try:
         user, pw = get_credentials()
         async with AqualinkClient(user, pw) as client:
             devices = await open_devices(client)
-            messages = await ACTIONS[name](devices)
+            messages = await run(devices)
         cache.record_success()  # connectivity confirmed; no fresh snapshot
         poller.request_refresh()
         return messages
@@ -169,6 +189,36 @@ async def pool_on() -> ActionResult:
 async def pool_off() -> ActionResult:
     messages = await _run_action("pool-off")
     return ActionResult(ok=True, action="pool-off", messages=messages)
+
+
+@app.post("/api/pump/on", response_model=ActionResult)
+async def pump_on() -> ActionResult:
+    messages = await _run_action("pump-on")
+    return ActionResult(ok=True, action="pump-on", messages=messages)
+
+
+@app.post("/api/pump/off", response_model=ActionResult)
+async def pump_off() -> ActionResult:
+    messages = await _run_action("pump-off")
+    return ActionResult(ok=True, action="pump-off", messages=messages)
+
+
+@app.post("/api/spa/temp", response_model=ActionResult)
+async def spa_temp(body: TempRequest) -> ActionResult:
+    _validate_setpoint(body.temp, controls.SPA_SETPOINT_RANGE)
+    messages = await _run_action(
+        "spa-temp", lambda devices: controls.cmd_set_spa_temp(devices, body.temp)
+    )
+    return ActionResult(ok=True, action="spa-temp", messages=messages)
+
+
+@app.post("/api/pool/temp", response_model=ActionResult)
+async def pool_temp(body: TempRequest) -> ActionResult:
+    _validate_setpoint(body.temp, controls.POOL_SETPOINT_RANGE)
+    messages = await _run_action(
+        "pool-temp", lambda devices: controls.cmd_set_pool_temp(devices, body.temp)
+    )
+    return ActionResult(ok=True, action="pool-temp", messages=messages)
 
 
 @app.post("/api/safety", response_model=ActionResult)

@@ -41,6 +41,12 @@ client-build:
 client-lint:
     cd client; npm run lint
 
+client-test:
+    cd client; npm run test
+
+client-e2e:
+    cd client; npm run e2e
+
 # controls
 
 spa-on:
@@ -54,6 +60,12 @@ pool-on:
 
 pool-off:
     {{python}} -m app.cli pool-off
+
+pump-on:
+    {{python}} -m app.cli pump-on
+
+pump-off:
+    {{python}} -m app.cli pump-off
 
 status:
     {{python}} -m app.cli status

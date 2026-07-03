@@ -14,6 +14,12 @@ COOLDOWN_DELAY = 5  # seconds to purge heat exchanger after heater-off
 SPA_SET_POINT = 102  # desired spa temperature (deg F); set None to skip
 POOL_SET_POINT = 84  # desired pool temperature (deg F); set None to skip
 
+# System-specific set-point bounds (deg F), narrower than what Jandy accepts.
+# Requests outside these are rejected before any command is sent upstream, and
+# the web client reads them from /api/status to bound its sliders.
+SPA_SETPOINT_RANGE = (90, 104)
+POOL_SETPOINT_RANGE = (76, 90)
+
 # Device keys as exposed by iaqualink-py. These are the common defaults,
 # but your system may differ -- run `status` first to confirm the names.
 SPA_DEVICE = "spa_pump"  # the "spa mode" toggle
@@ -22,6 +28,7 @@ SPA_SETPOINT_DEV = "spa_set_point"
 
 POOL_HEATER = "pool_heater"
 POOL_SETPOINT_DEV = "pool_set_point"
+FILTER_PUMP = "pool_pump"  # main filtration pump; deliberately untouched by safety
 
 # Temperature sensors (read-only). Verify key names against real `status` output.
 TEMP_SENSORS = {"air": "air_temp", "pool": "pool_temp", "spa": "spa_temp"}
@@ -48,7 +55,14 @@ def _temp_value(dev: Any) -> Optional[float]:
 async def cmd_status(devices: dict[str, Any]) -> dict[str, Any]:
     """Return structured status for display or API serialization."""
     result: dict[str, Any] = {}
-    for key in (SPA_DEVICE, SPA_HEATER, SPA_SETPOINT_DEV, POOL_HEATER, POOL_SETPOINT_DEV):
+    for key in (
+        SPA_DEVICE,
+        SPA_HEATER,
+        SPA_SETPOINT_DEV,
+        POOL_HEATER,
+        POOL_SETPOINT_DEV,
+        FILTER_PUMP,
+    ):
         dev = devices.get(key)
         if dev is None:
             result[key] = {"state": None, "label": "(not present)"}
@@ -63,7 +77,50 @@ async def cmd_status(devices: dict[str, Any]) -> dict[str, Any]:
             label = f"state={state}"
         result[key] = {"state": state, "label": label}
     temps = {name: _temp_value(devices.get(key)) for name, key in TEMP_SENSORS.items()}
-    return {"devices": result, "temps": temps, "all_keys": sorted(devices.keys())}
+    return {
+        "devices": result,
+        "temps": temps,
+        "setpoint_ranges": {"spa": SPA_SETPOINT_RANGE, "pool": POOL_SETPOINT_RANGE},
+        "all_keys": sorted(devices.keys()),
+    }
+
+
+def _check_setpoint(temp: int, bounds: tuple[int, int], zone: str) -> None:
+    lo, hi = bounds
+    if not lo <= temp <= hi:
+        raise ValueError(f"{zone} set point {temp}°F is outside {lo}-{hi}°F")
+
+
+async def cmd_set_spa_temp(devices: dict[str, Any], temp: int) -> list[str]:
+    """Set the spa heater set point. Does not change any on/off state."""
+    _check_setpoint(temp, SPA_SETPOINT_RANGE, "Spa")
+    sp = require(devices, SPA_SETPOINT_DEV)
+    await sp.set_temperature(temp)
+    return [f"Spa set point set to {temp}°F."]
+
+
+async def cmd_set_pool_temp(devices: dict[str, Any], temp: int) -> list[str]:
+    """Set the pool heater set point. Does not change any on/off state."""
+    _check_setpoint(temp, POOL_SETPOINT_RANGE, "Pool")
+    sp = require(devices, POOL_SETPOINT_DEV)
+    await sp.set_temperature(temp)
+    return [f"Pool set point set to {temp}°F."]
+
+
+async def cmd_pump_on(devices: dict[str, Any]) -> list[str]:
+    """Turn on the main filtration pump."""
+    pump = require(devices, FILTER_PUMP)
+    if not pump.is_on:
+        await pump.turn_on()
+    return ["Filter pump is on."]
+
+
+async def cmd_pump_off(devices: dict[str, Any]) -> list[str]:
+    """Turn off the main filtration pump."""
+    pump = require(devices, FILTER_PUMP)
+    if pump.is_on:
+        await pump.turn_off()
+    return ["Filter pump is off."]
 
 
 async def cmd_spa_on(devices: dict[str, Any]) -> list[str]:

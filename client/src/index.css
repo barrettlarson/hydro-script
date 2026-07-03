@@ -153,6 +153,12 @@ body {
   box-shadow: var(--shadow);
   padding: 1rem 1.125rem;
   display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+}
+
+.zone-row {
+  display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
@@ -203,6 +209,97 @@ body {
 .zone-button:disabled {
   opacity: 0.55;
   cursor: default;
+}
+
+.setpoint {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.step-button {
+  width: 2.75rem;
+  height: 2.75rem;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--off-btn);
+  color: var(--off-btn-text);
+  font-size: 1.4rem;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.step-button:active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.step-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.setpoint-value {
+  flex-shrink: 0;
+  min-width: 2.9rem;
+  text-align: right;
+  font-size: 1.15rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.setpoint-slider {
+  flex: 1;
+  min-width: 0;
+  height: 2.75rem;
+  margin: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+
+.setpoint-slider:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.setpoint-slider::-webkit-slider-runnable-track {
+  height: 0.5rem;
+  border-radius: 0.25rem;
+  background: var(--off-btn);
+}
+
+.setpoint-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 1.75rem;
+  height: 1.75rem;
+  margin-top: -0.625rem;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 3px solid var(--card);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
+.setpoint-slider::-moz-range-track {
+  height: 0.5rem;
+  border-radius: 0.25rem;
+  background: var(--off-btn);
+}
+
+.setpoint-slider::-moz-range-thumb {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 3px solid var(--card);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
 }
 
 .spinner {
