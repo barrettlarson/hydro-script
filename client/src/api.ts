@@ -74,6 +74,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+export interface AuthResult {
+  ok: boolean
+}
+
 export const getStatus = () => request<Status>('/api/status')
 export const getHealth = () => request<Health>('/api/health')
 export const postAction = (path: ActionPath) =>
@@ -84,3 +88,11 @@ export const postTemp = (zone: 'spa' | 'pool', temp: number) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ temp }),
   })
+// The session rides on a same-origin cookie, which fetch sends by default.
+export const postLogin = (email: string, password: string) =>
+  request<AuthResult>('/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  })
+export const postLogout = () => request<AuthResult>('/api/logout', { method: 'POST' })

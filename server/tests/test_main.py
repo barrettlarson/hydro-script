@@ -10,7 +10,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app import main
+from app import auth, main
+from app.aqualink import MissingCredentials
 from app.cache import StateCache
 from app.errors import FailureCategory
 from tests.conftest import FakeDevice
@@ -30,8 +31,12 @@ class FakeAqualinkClient:
 
 
 @pytest.fixture
-def client(monkeypatch: pytest.MonkeyPatch, devices: dict[str, FakeDevice]) -> TestClient:
+def anon_client(monkeypatch: pytest.MonkeyPatch, devices: dict[str, FakeDevice]) -> TestClient:
+    """TestClient with the connection layer faked but no session — for auth tests."""
     monkeypatch.setattr(main, "get_credentials", lambda: ("user", "pass"))
+    # The login path resolves get_credentials inside app.auth, not app.main.
+    monkeypatch.setattr(auth, "get_credentials", lambda: ("user", "pass"))
+    monkeypatch.setattr(auth, "FAILED_LOGIN_DELAY", 0)
     monkeypatch.setattr(main, "AqualinkClient", FakeAqualinkClient)
 
     async def fake_open_devices(_client: Any) -> dict[str, FakeDevice]:
@@ -40,6 +45,68 @@ def client(monkeypatch: pytest.MonkeyPatch, devices: dict[str, FakeDevice]) -> T
     monkeypatch.setattr(main, "open_devices", fake_open_devices)
     monkeypatch.setattr(main, "cache", StateCache())
     return TestClient(main.app)
+
+
+@pytest.fixture
+def client(anon_client: TestClient) -> TestClient:
+    """Logged-in client: the session cookie persists on the TestClient."""
+    r = anon_client.post("/api/login", json={"email": "user", "password": "pass"})
+    assert r.status_code == 200
+    return anon_client
+
+
+class TestAuth:
+    def test_unauth_status_401(self, anon_client: TestClient) -> None:
+        r = anon_client.get("/api/status")
+        assert r.status_code == 401
+        assert r.json()["detail"] == "Not authenticated."
+
+    def test_unauth_health_401(self, anon_client: TestClient) -> None:
+        # Gated: health exposes raw exception text in recent_failures.
+        assert anon_client.get("/api/health").status_code == 401
+
+    def test_unauth_action_401_and_no_device_touched(
+        self, anon_client: TestClient, devices: dict[str, FakeDevice]
+    ) -> None:
+        r = anon_client.post("/api/spa/on")
+        assert r.status_code == 401
+        # the dependency short-circuits before _run_action opens a connection
+        assert all(dev.calls == [] for dev in devices.values())
+
+    def test_bad_password_401_and_still_gated(self, anon_client: TestClient) -> None:
+        r = anon_client.post("/api/login", json={"email": "user", "password": "nope"})
+        assert r.status_code == 401
+        assert r.json()["detail"] == "Invalid email or password."
+        assert anon_client.get("/api/status").status_code == 401
+
+    def test_wrong_email_401(self, anon_client: TestClient) -> None:
+        r = anon_client.post("/api/login", json={"email": "intruder", "password": "pass"})
+        assert r.status_code == 401
+
+    def test_email_case_and_whitespace_insensitive(self, anon_client: TestClient) -> None:
+        r = anon_client.post("/api/login", json={"email": " USER ", "password": "pass"})
+        assert r.status_code == 200
+        assert r.json() == {"ok": True}
+
+    def test_login_grants_access(self, client: TestClient) -> None:
+        main.cache.record_success({"devices": {}, "temps": {}})
+        assert client.get("/api/status").status_code == 200
+        assert client.get("/api/health").status_code == 200
+
+    def test_logout_revokes_session(self, client: TestClient) -> None:
+        assert client.post("/api/logout").status_code == 200
+        assert client.get("/api/status").status_code == 401
+
+    def test_login_without_server_creds_500(
+        self, anon_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def raise_missing() -> tuple[str, str]:
+            raise MissingCredentials("IAQUALINK_USER not set")
+
+        monkeypatch.setattr(auth, "get_credentials", raise_missing)
+        r = anon_client.post("/api/login", json={"email": "user", "password": "pass"})
+        assert r.status_code == 500
+        assert r.json()["detail"] == "Server login is not configured."
 
 
 class TestStatusEndpoint:

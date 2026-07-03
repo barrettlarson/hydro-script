@@ -135,6 +135,34 @@ test.describe('set point controls', () => {
   })
 })
 
+test.describe('auth', () => {
+  test('login screen gates the app until a session exists', async ({ page }) => {
+    let authed = false
+    await page.route('**/api/**', async (route) => {
+      const req = route.request()
+      const path = new URL(req.url()).pathname
+      if (req.method() === 'POST' && path === '/api/login') {
+        authed = true
+        await route.fulfill({ json: { ok: true } })
+      } else if (!authed) {
+        await route.fulfill({ status: 401, json: { detail: 'Not authenticated.' } })
+      } else if (path === '/api/status') {
+        await route.fulfill({ json: status })
+      } else {
+        await route.fulfill({ json: health })
+      }
+    })
+    await page.goto('/')
+    await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Spa' })).not.toBeVisible()
+    await page.getByLabel('Email').fill('user@example.com')
+    await page.getByLabel('Password').fill('hunter2')
+    await page.getByRole('button', { name: 'Sign in' }).click()
+    await expect(page.getByRole('heading', { name: 'Spa' })).toBeVisible()
+    await expect(page.getByText('Live')).toBeVisible()
+  })
+})
+
 test.describe('action failures', () => {
   test('surfaces the API error message', async ({ page }) => {
     await page.route('**/api/**', async (route) => {

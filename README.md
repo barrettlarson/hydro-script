@@ -109,7 +109,12 @@ never commit):
 ```
 IAQUALINK_USER=you@example.com
 IAQUALINK_PASS=yourpassword
+SESSION_SECRET=<any long random string, e.g. from `openssl rand -hex 32`>
 ```
+
+`SESSION_SECRET` signs the web app's session cookies. It's optional — without
+it a random per-boot secret is used and every server restart (including
+`--reload` in dev) logs everyone out.
 
 ## CLI usage
 
@@ -160,6 +165,8 @@ Endpoints:
 | Method | Path            | Description                                                |
 | ------ | --------------- | ---------------------------------------------------------- |
 | GET    | `/`             | Built web client if present (`client/dist`), else liveness |
+| POST   | `/api/login`    | Start a session (JSON `{"email", "password"}`)             |
+| POST   | `/api/logout`   | End the session                                            |
 | GET    | `/api/status`   | Latest cached device snapshot (kept fresh by the poller)   |
 | GET    | `/api/health`   | Observability: cache freshness, staleness, recent failures |
 | POST   | `/api/spa/on`   | Spa startup sequence                                       |
@@ -171,6 +178,18 @@ Endpoints:
 | POST   | `/api/spa/temp` | Set spa target temp (JSON `{"temp": N}`, bounds-checked)   |
 | POST   | `/api/pool/temp`| Set pool target temp (JSON `{"temp": N}`, bounds-checked)  |
 | POST   | `/api/safety`   | Idempotent safety shutdown                                 |
+
+### Authentication
+
+Everything under `/api` except `/api/login` and `/api/logout` requires a
+session. There is one shared login for the household: the form is checked
+(constant-time) against the same `IAQUALINK_USER`/`IAQUALINK_PASS` the backend
+uses upstream — no separate user store. A successful login sets a signed
+session cookie (`SessionMiddleware`, 30-day rolling expiry, `SameSite=Lax`);
+nothing is stored server-side, so sessions survive restarts as long as
+`SESSION_SECRET` is set. The static client shell at `/` stays public — the
+data behind it is what's gated. The nightly `safety` cron is unaffected: it
+uses the CLI, which talks to Jandy directly and never goes through HTTP.
 
 A single background **poller** (`poller.py`) is the only thing that polls
 Jandy: started on app lifespan, it refreshes the `StateCache` every ~30s, and
@@ -194,7 +213,9 @@ category-appropriate HTTP error.
 A mobile-first React + TypeScript PWA in `client/` (Vite). It shows air/pool/spa
 temperatures, spa/pool/filter-pump state with on/off controls, target
 temperature sliders, a live/stale/offline health indicator, and installs to a
-phone home screen (add-to-home-screen — no app store).
+phone home screen (add-to-home-screen — no app store). A login screen gates
+everything until a session exists (see [Authentication](#authentication));
+sign-out lives in the footer.
 
 The set point controls are designed for wet hands: a fat-thumb slider that
 sends **one** request when released (nothing mid-drag), and big +/− steppers

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { postAction, postTemp, type Health, type Status } from "./api";
+import { postAction, postLogout, postTemp, type Health, type Status } from "./api";
+import Login from "./Login";
 import { usePolledState } from "./usePolledState";
 
 function isOn(status: Status | null, key: string): boolean {
@@ -201,9 +202,22 @@ function ZoneCard({
 type Pending = "spa" | "pool" | "pump" | "spa-temp" | "pool-temp" | null;
 
 export default function App() {
-  const { status, health, warmingUp, pollError, refresh } = usePolledState();
+  const { status, health, warmingUp, unauthenticated, pollError, refresh } =
+    usePolledState();
   const [pending, setPending] = useState<Pending>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  if (unauthenticated) {
+    // No HealthDot here: /api/health is gated too, so it would read Offline.
+    return (
+      <div className="app">
+        <header className="app-header">
+          <h1>Hydro</h1>
+        </header>
+        <Login onSuccess={() => void refresh()} />
+      </div>
+    );
+  }
 
   const spaOn = isOn(status, "spa_pump");
   const spaHeaterOn = isOn(status, "spa_heater");
@@ -315,6 +329,14 @@ export default function App() {
         {health?.last_success_at
           ? `Updated ${new Date(health.last_success_at).toLocaleTimeString()}`
           : "Waiting for first update…"}
+        {" · "}
+        <button
+          type="button"
+          className="link-button"
+          onClick={() => void postLogout().then(() => refresh())}
+        >
+          Sign out
+        </button>
       </footer>
     </div>
   );

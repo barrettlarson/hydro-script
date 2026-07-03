@@ -8,6 +8,7 @@ dependencies = [
     "python-dotenv",
     "fastapi",
     "uvicorn[standard]",
+    "itsdangerous>=2.2.0",
 ]
 
 [project.optional-dependencies]
