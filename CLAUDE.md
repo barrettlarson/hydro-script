@@ -244,9 +244,6 @@ push subscriptions are per-browser/per-device.
       sender, endpoint + lifecycle tests in test_main.py, poller hook tests;
       client vitest (bell/nudge, key decode) + Playwright specs (headless
       Chromium reports Notification.permission 'denied'; stub it in initScript).
-- Not carried over from the SMS plan: per-recipient phone config (obsolete —
-  per-device subscription replaces it). Watch state is in-memory; persistence
-  across restarts is in the backlog.
 
 ## Phase 4 — Deploy v1 (AWS) [ ]
 
