@@ -31,7 +31,11 @@ interface CapturedPost {
 }
 
 /** Mock every /api call in the browser and capture POSTs for assertions. */
-async function mockApi(page: Page, posts: CapturedPost[]): Promise<void> {
+async function mockApi(
+  page: Page,
+  posts: CapturedPost[],
+  { pushEnabled = false } = {},
+): Promise<void> {
   await page.route('**/api/**', async (route) => {
     const req = route.request()
     const path = new URL(req.url()).pathname
@@ -42,6 +46,8 @@ async function mockApi(page: Page, posts: CapturedPost[]): Promise<void> {
       await route.fulfill({ json: status })
     } else if (path === '/api/health') {
       await route.fulfill({ json: health })
+    } else if (path === '/api/push/config' && pushEnabled) {
+      await route.fulfill({ json: { enabled: true, public_key: 'BFake', subscribed: false } })
     } else {
       await route.fulfill({ status: 404, json: { detail: 'not found' } })
     }
@@ -160,6 +166,38 @@ test.describe('auth', () => {
     await page.getByRole('button', { name: 'Sign in' }).click()
     await expect(page.getByRole('heading', { name: 'Spa' })).toBeVisible()
     await expect(page.getByText('Live')).toBeVisible()
+  })
+})
+
+test.describe('notifications', () => {
+  test('bell is hidden when the server has push disabled', async ({ page }) => {
+    await mockApi(page, []) // /api/push/config 404s, like a server with no VAPID key
+    await page.goto('/')
+    await expect(page.getByRole('heading', { name: 'Spa' })).toBeVisible()
+    await expect(page.getByRole('button', { name: /notify this device/i })).not.toBeVisible()
+  })
+
+  test('nudges to enroll when starting a heat-up, and stays dismissed', async ({ page }) => {
+    // Playwright's headless shell reports Notification.permission 'denied'
+    // even when the permission is granted — stub the not-yet-asked state.
+    await page.addInitScript(() => {
+      // runs in the browser; e2e/ compiles without the DOM lib, so go via globalThis
+      const g = globalThis as Record<string, unknown>
+      Object.defineProperty(g.Notification, 'permission', { get: () => 'default' })
+    })
+    const posts: CapturedPost[] = []
+    await mockApi(page, posts, { pushEnabled: true })
+    await page.goto('/')
+    await expect(page.getByRole('button', { name: /notify this device/i })).toBeVisible()
+    const spa = page.locator('section', { has: page.getByRole('heading', { name: 'Spa' }) })
+    await spa.getByRole('button', { name: 'Turn on' }).click()
+    await expect(page.getByText(/ping when the water's ready/i)).toBeVisible()
+    await page.getByRole('button', { name: 'Not now' }).click()
+    await expect(page.getByText(/ping when the water's ready/i)).not.toBeVisible()
+    // the choice sticks for the session: the next heat-up doesn't re-nudge
+    await spa.getByRole('button', { name: 'Turn on' }).click()
+    await expect.poll(() => posts.filter((p) => p.path === '/api/spa/on').length).toBe(2)
+    await expect(page.getByText(/ping when the water's ready/i)).not.toBeVisible()
   })
 })
 

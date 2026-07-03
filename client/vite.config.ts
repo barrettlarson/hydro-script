@@ -11,6 +11,11 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
+      // Custom SW (src/sw.ts): same precache behavior as the old generated
+      // one, plus Web Push handlers. The /api denylist lives in sw.ts now.
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.ts',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
       manifest: {
         name: 'Hydro — Pool & Spa',
@@ -24,11 +29,6 @@ export default defineConfig({
           { src: 'pwa-512.png', sizes: '512x512', type: 'image/png' },
           { src: 'pwa-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
-      },
-      workbox: {
-        // The app shell is precached for instant launch, but /api must never
-        // be served by the service worker — status has to be live.
-        navigateFallbackDenylist: [/^\/api\//],
       },
     }),
   ],

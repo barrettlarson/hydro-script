@@ -70,23 +70,29 @@ server/
     auth.py       # session auth: shared login vs .env cred, require_auth dependency
     controls.py   # pure logic: spa/pool on-off, status read (incl. temps), safety
     cli.py        # thin CLI wrapper (print/exit/argv)
-    main.py       # FastAPI: action endpoints, status, health; serves client/dist
-    poller.py     # single background poll loop feeding the StateCache
+    main.py       # FastAPI: action endpoints, status, health, push; serves client/dist
+    poller.py     # single background poll loop feeding the StateCache (+ on_snapshot hook)
     errors.py     # error taxonomy: classify(exc) -> FailureCategory
     cache.py      # StateCache: snapshot, staleness, failure history
-  tests/          # fake-device tests (controls, cache, errors, poller)
+    push.py       # Web Push: VAPID config, per-device subscription store, sender
+    watcher.py    # pure heat-watch logic: snapshot -> progress/ready PushMessages
+  tests/          # fake-device tests (controls, cache, errors, poller, push, watcher)
 client/           # React + TypeScript PWA (Vite): mobile-first UI over the API
   src/
     api.ts             # typed API client (same-origin /api)
     usePolledState.ts  # polls status+health every 15s, pauses when hidden
-    App.tsx            # temps, spa/pool cards, health indicator; login gate
+    App.tsx            # temps, spa/pool cards, health indicator; login gate; bell + nudge
     Login.tsx          # shared-credential login form (shown on 401)
+    sw.ts              # service worker: precache/nav-fallback + push notification display
+    push.ts            # push plumbing: support check, subscribe/unsubscribe, key decode
+    usePush.ts         # push state hook: unavailable/off/enabled/denied + enable/disable
 CLAUDE.md
 README.md
 justfile              # task runner (cross-platform)
 pyproject.toml        # project metadata + deps, managed by uv
 uv.lock               # lockfile for reproducible installs
-.env                  # IAQUALINK_USER / IAQUALINK_PASS / SESSION_SECRET (gitignored, never commit)
+.env                  # IAQUALINK_USER / IAQUALINK_PASS / SESSION_SECRET / VAPID_PRIVATE_KEY (gitignored, never commit)
+.data/                # runtime state (push subscriptions JSON) — gitignored, persist on deploy
 ```
 
 ## Commands
@@ -99,6 +105,7 @@ just client-build          # production client build into client/dist
 just client-test           # vitest (jsdom)
 just client-e2e            # Playwright (mocked /api, needs chromium installed)
 just check                 # ruff + mypy + pytest
+just vapid-keys            # generate a Web Push VAPID keypair (paste into .env)
 PYTHONPATH=server python -m app.cli [spa-on|spa-off|pool-on|pool-off|status|safety]
 ```
 
@@ -140,7 +147,7 @@ Status legend: [x] done · [~] in progress · [ ] not started
 
 ## Phase 1.5 — Background poller + cache read path [x]
 
-Built the decoupling layer *before* the web client, so the
+Built the decoupling layer _before_ the web client, so the
 first real multi-client load lands on a cache instead of multiplying per-request
 upstream calls. A single poller (`poller.py`) is now the only thing that polls
 upstream; `/api/status` is served from the `StateCache`.
@@ -206,16 +213,40 @@ upstream; `/api/status` is served from the `StateCache`.
 - [x] Tests for auth gating (server: TestAuth in test_main.py; client: auth
       gate specs in App.test.tsx + a stateful login e2e spec)
 
-## Phase 3 — SMS notifications [ ]
+## Phase 3 — Push notifications (heat-up ready alerts) [x]
 
-Notify when pool/spa reaches target temperature.
+Notify when pool/spa reaches target temperature. Built on **Web Push (VAPID)**:
+push subscriptions are per-browser/per-device.
 
-- [ ] Background watcher: compare current temp vs. set point in the poll loop
-- [ ] Hysteresis / one-shot latch so it doesn't re-fire while hovering at target
-- [ ] SMS delivery (AWS SNS is the natural fit if deploying on AWS; evaluate
-      cost + phone-number/verification requirements)
-- [ ] Per-recipient opt-in / phone-number config (family members)
-- [ ] Tests for the crossing-detection + latch logic (no real SMS)
+- [x] `watcher.py`: pure heat-watch logic. `HeatWatcher.start(zone, device_id)`
+      on spa/pool-on; `evaluate(snapshot)` returns `PushMessage`s. Progress
+      notifications throttle to one per whole degree (same `tag`, replaced
+      in place, silent); the final "ready" alert renotifies audibly. One-shot
+      latch: the watch is deleted when ready fires — no re-fire while hovering.
+      External turn-off (Jandy app, safety cron) cancels the watch, with a 90s
+      grace period so cache lag right after spa-on doesn't insta-cancel.
+- [x] `push.py`: VAPID config from `VAPID_PRIVATE_KEY` env (public key derived
+      at startup, so they can't mismatch; `just vapid-keys` generates one),
+      file-backed per-device `SubscriptionStore` (`.data/push_subscriptions.json`),
+      `send_push` with TTLs (ready 3600s, progress 120s — pywebpush defaults
+      ttl=0 which drops messages for briefly-offline devices). 404/410 from the
+      push service prunes the subscription and cancels the watch.
+- [x] Wiring: poller `on_snapshot` hook (poller stays a dumb loop; hook errors
+      never kill it). Devices are identified by an opaque `device_id` minted
+      into the signed session cookie on first subscribe. Endpoints:
+      GET /api/push/config, POST /api/push/subscribe + /unsubscribe (all on the
+      protected router). Strictly per-device: no subscription → no notification.
+- [x] Client: `sw.ts` (injectManifest — custom SW shows notifications, keeps
+      the same precache + /api-denylist behavior), bell toggle in the header,
+      "Notify me" nudge banner when starting a heat-up unenrolled. Degrades
+      gracefully: no VAPID key → push reports disabled and the bell hides.
+- [x] Tests: watcher (progress/ready/latch/cancellation/grace), push store +
+      sender, endpoint + lifecycle tests in test_main.py, poller hook tests;
+      client vitest (bell/nudge, key decode) + Playwright specs (headless
+      Chromium reports Notification.permission 'denied'; stub it in initScript).
+- Not carried over from the SMS plan: per-recipient phone config (obsolete —
+  per-device subscription replaces it). Watch state is in-memory; persistence
+  across restarts is in the backlog.
 
 ## Phase 4 — Deploy v1 (AWS) [ ]
 
@@ -228,6 +259,10 @@ AWS is viable because iAquaLink is cloud-only (see architecture fact).
       (e.g. ECS Fargate / Lightsail / a t-class instance) OR EventBridge-driven
       scheduled Lambda for polling + a separate path for actions. Evaluate cost.
 - [ ] Secrets: credentials in AWS Secrets Manager / SSM, not env files in image
+      (includes `VAPID_PRIVATE_KEY` — rotating it silently invalidates every
+      push subscription, so treat it like SESSION_SECRET: set once, persist)
+- [ ] Persist `.data/` (push subscriptions) across deploys — volume mount or
+      move the store to persistence
 - [ ] Nightly safety: EventBridge schedule instead of cron
 - [ ] HTTPS + enforce the Phase 2.5 auth gate on the deployed API (don't expose
       actions openly)
@@ -256,6 +291,8 @@ Predict heating duration so user sets "ready by 10am" and backend starts in time
 
 - Color/effect light control (model-dependent)
 - Failure-trend persistence across restarts (currently in-memory)
+- Heat-watch persistence across restarts (in-memory: a server restart
+  mid-heat-up silently drops the pending notification)
 - Per-category backoff/alerting (deferred until real failures observed)
 
 ## Open questions to resolve on real hardware

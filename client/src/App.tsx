@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { postAction, postLogout, postTemp, type Health, type Status } from "./api";
 import Login from "./Login";
 import { usePolledState } from "./usePolledState";
+import { usePush, type PushControls } from "./usePush";
 
 function isOn(status: Status | null, key: string): boolean {
   return status?.devices[key]?.label === "ON";
@@ -52,6 +53,69 @@ function HealthDot({ health }: { health: Health | null }) {
       <span className="health-dot" aria-hidden="true" />
       {level === "ok" ? "Live" : level === "degraded" ? "Stale" : "Offline"}
     </span>
+  );
+}
+
+function BellIcon({ off }: { off: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="20"
+      height="20"
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+      <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+      {off && <line x1="4" y1="4" x2="20" y2="20" />}
+    </svg>
+  );
+}
+
+/**
+ * Header toggle for per-device push notifications. Hidden when push is
+ * unavailable (unsupported browser, or server not configured). A denied
+ * permission can only be undone in browser settings, so the button just
+ * explains itself and stays disabled.
+ */
+function NotificationBell({
+  push,
+  onError,
+}: {
+  push: PushControls;
+  onError: (message: string) => void;
+}) {
+  if (push.state === "unavailable") return null;
+  const enabled = push.state === "enabled";
+  const title =
+    push.state === "denied"
+      ? "Notifications are blocked in your browser settings"
+      : enabled
+        ? "Notifications on for this device — tap to turn off"
+        : "Notify this device when the water is ready";
+  const toggle = async () => {
+    try {
+      await (enabled ? push.disable() : push.enable());
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    }
+  };
+  return (
+    <button
+      type="button"
+      className={`bell-button${enabled ? " enabled" : ""}`}
+      disabled={push.busy || push.state === "denied"}
+      title={title}
+      aria-label={title}
+      aria-pressed={enabled}
+      onClick={() => void toggle()}
+    >
+      <BellIcon off={!enabled} />
+    </button>
   );
 }
 
@@ -206,6 +270,10 @@ export default function App() {
     usePolledState();
   const [pending, setPending] = useState<Pending>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const push = usePush(!unauthenticated);
+  const [nudge, setNudge] = useState<"hidden" | "shown" | "dismissed">(
+    "hidden",
+  );
 
   if (unauthenticated) {
     // No HealthDot here: /api/health is gated too, so it would read Offline.
@@ -245,8 +313,14 @@ export default function App() {
     }
   }
 
-  const toggle = (zone: "spa" | "pool" | "pump", currentlyOn: boolean) =>
-    run(zone, () => postAction(`${zone}/${currentlyOn ? "off" : "on"}`));
+  const toggle = (zone: "spa" | "pool" | "pump", currentlyOn: boolean) => {
+    // Starting a heat-up is the moment notifications matter: nudge once if
+    // this device could receive them but isn't enrolled yet.
+    if (!currentlyOn && zone !== "pump" && push.state === "off") {
+      setNudge((n) => (n === "dismissed" ? n : "shown"));
+    }
+    return run(zone, () => postAction(`${zone}/${currentlyOn ? "off" : "on"}`));
+  };
   const setTemp = (zone: "spa" | "pool", temp: number) =>
     run(`${zone}-temp`, () => postTemp(zone, temp));
 
@@ -265,12 +339,44 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <h1>Hydro</h1>
-        <HealthDot health={health} />
+        <div className="header-right">
+          <NotificationBell push={push} onError={setActionError} />
+          <HealthDot health={health} />
+        </div>
       </header>
 
       {actionError && <div className="banner banner-error">{actionError}</div>}
       {!actionError && pollError && (
         <div className="banner banner-error">{pollError}</div>
+      )}
+      {nudge === "shown" && push.state === "off" && (
+        <div className="banner banner-nudge">
+          <span>
+            Want a ping when the water's ready? Only this device gets
+            notified.
+          </span>
+          <span className="nudge-actions">
+            <button
+              type="button"
+              className="nudge-enable"
+              disabled={push.busy}
+              onClick={() =>
+                void push.enable().catch((e: unknown) => {
+                  setActionError(e instanceof Error ? e.message : String(e));
+                })
+              }
+            >
+              Notify me
+            </button>
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => setNudge("dismissed")}
+            >
+              Not now
+            </button>
+          </span>
+        </div>
       )}
       {warmingUp && !status && (
         <div className="banner">

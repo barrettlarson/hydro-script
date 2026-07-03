@@ -88,6 +88,22 @@ export const postTemp = (zone: 'spa' | 'pool', temp: number) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ temp }),
   })
+export interface PushConfig {
+  enabled: boolean
+  public_key: string | null
+  subscribed: boolean
+}
+
+export const getPushConfig = () => request<PushConfig>('/api/push/config')
+// `subscription` is the browser's PushSubscription.toJSON(), passed through opaque.
+export const postPushSubscribe = (subscription: unknown) =>
+  request<AuthResult>('/api/push/subscribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ subscription }),
+  })
+export const postPushUnsubscribe = () =>
+  request<AuthResult>('/api/push/unsubscribe', { method: 'POST' })
 // The session rides on a same-origin cookie, which fetch sends by default.
 export const postLogin = (email: string, password: string) =>
   request<AuthResult>('/api/login', {

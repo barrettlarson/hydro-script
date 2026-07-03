@@ -80,6 +80,43 @@ class TestPollOnce:
         assert cache.recent_failures[0].category.value == "network"
 
 
+class TestSnapshotHook:
+    async def test_hook_receives_each_snapshot(self):
+        cache = StateCache()
+        seen: list[dict[str, Any]] = []
+
+        async def hook(snapshot: dict[str, Any]) -> None:
+            seen.append(snapshot)
+
+        poller = Poller(cache, FakeFetch({"devices": {"x": 1}}), on_snapshot=hook)
+        await poller.poll_once()
+
+        assert seen == [{"devices": {"x": 1}}]
+
+    async def test_hook_not_called_on_failure(self):
+        cache = StateCache()
+        seen: list[dict[str, Any]] = []
+
+        async def hook(snapshot: dict[str, Any]) -> None:
+            seen.append(snapshot)
+
+        poller = Poller(cache, FakeFetch(error=ConnectionError("no route")), on_snapshot=hook)
+        await poller.poll_once()
+
+        assert seen == []
+
+    async def test_hook_exception_does_not_break_the_poll(self):
+        cache = StateCache()
+
+        async def hook(_snapshot: dict[str, Any]) -> None:
+            raise RuntimeError("watcher blew up")
+
+        poller = Poller(cache, FakeFetch({"devices": {}}), on_snapshot=hook)
+        await poller.poll_once()  # must not raise
+
+        assert cache.state == {"devices": {}}  # snapshot still recorded
+
+
 class TestRunLoop:
     async def test_start_polls_immediately_then_stops(self):
         cache = StateCache()
