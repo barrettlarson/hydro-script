@@ -43,9 +43,12 @@ def make_devices(**overrides: dict[str, Any]) -> dict[str, FakeDevice]:
     defaults: dict[str, dict[str, Any]] = {
         "spa_pump": {"is_on": False, "state": "0"},
         "spa_heater": {"is_on": False, "state": "0"},
-        "spa_set_point": {"is_on": False, "state": "102"},
+        "spa_set_point": {"state": "102"},
         "pool_heater": {"is_on": False, "state": "0"},
-        "pool_set_point": {"is_on": False, "state": "84"},
+        "pool_set_point": {"state": "84"},
+        "air_temp": {"state": "75"},
+        "pool_temp": {"state": "82"},
+        "spa_temp": {"state": ""},
     }
     for key, vals in overrides.items():
         if key in defaults:
@@ -64,5 +67,4 @@ def devices() -> dict[str, FakeDevice]:
 @pytest.fixture(autouse=True)
 def _patch_delays(monkeypatch: pytest.MonkeyPatch) -> None:
     """Zero out asyncio.sleep so tests run instantly."""
-    monkeypatch.setattr(controls, "VALVE_DELAY", 0)
     monkeypatch.setattr(controls, "COOLDOWN_DELAY", 0)

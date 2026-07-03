@@ -27,8 +27,19 @@ typecheck:
 
 check: lint format-check typecheck test
 
-dev:
+server:
     {{python}} -m uvicorn app.main:app --app-dir server --reload
+
+# frontend (client/)
+
+client:
+    cd client; npm run dev
+
+client-build:
+    cd client; npm run build
+
+client-lint:
+    cd client; npm run lint
 
 # controls
 

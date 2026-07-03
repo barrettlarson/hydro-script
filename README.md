@@ -2,14 +2,14 @@
 
 A full-stack pool/spa automation system for a Jandy **iAquaLink** controller.
 It exposes the same control logic two ways — a thin **CLI** for scripting and
-cron, and a **FastAPI** HTTP API for a (forthcoming) web/mobile frontend — and
-puts engineering rigor (typed code, tests, an error taxonomy, and observability)
-around the controller.
+cron, and a **FastAPI** HTTP API consumed by a **React PWA** (`client/`) that
+installs to a phone home screen — and puts typed code,
+tests, an error taxonomy, and observability around the controller.
 
-It handles the correct sequencing for startup (spa mode → valve settle →
-heater on) and shutdown (heater off → purge → spa mode off), enforces spa/pool
-mutual exclusion on the shared heater, and ships a safety command designed to
-run as a nightly cron job.
+It handles the correct sequencing for startup (spa mode + heater on; AquaLink
+stages valve actuation internally) and shutdown (heater off → purge → spa mode
+off), enforces spa/pool mutual exclusion on the shared heater, and ships a
+safety command designed to run as a nightly cron job.
 
 ## Architecture
 
@@ -29,14 +29,10 @@ wraps that cloud API. Two consequences shape the design:
 
 ### Data flow
 
-Solid boxes/arrows are built; `┄┄` and `[planned]` mark what the roadmap
-schedules next (the React client). Reads are served from the cache the poller
-feeds; action/command paths always go live to Jandy and then nudge the poller
-to refresh.
+Reads are served from the cache the poller feeds; action/command paths always
+go live to Jandy and then nudge the poller to refresh.
 
 ```
-Legend:   ──►  built          ┄►  planned (see roadmap)
-
                        ┌───────────────────────────────┐
                        │       Jandy iAquaLink cloud   │
                        │  HTTPS · no local API · rate- │
@@ -65,7 +61,7 @@ Legend:   ──►  built          ┄►  planned (see roadmap)
                           GET /api/health ────────────┤
                                                       ▼
                                              ┌──────────────────┐
-                                             │  React client    │  [planned]
+                                             │   React PWA      │
                                              │    (client/)     │
                                              └──────────────────┘
 ```
@@ -83,7 +79,7 @@ server/
     errors.py     # error taxonomy: classify(exc) -> FailureCategory, HTTP mapping
     cache.py      # StateCache: last snapshot, staleness, bounded failure history
   tests/          # fake-device tests; no hardware required
-client/           # (future) React + TypeScript frontend
+client/           # React + TypeScript PWA (Vite); mobile-first UI over the API
 justfile          # task runner (cross-platform)
 pyproject.toml    # deps + metadata, managed by uv
 ```
@@ -153,7 +149,7 @@ Add it to cron so the spa can't run overnight:
 Run the FastAPI dev server:
 
 ```bash
-just dev
+just server
 # or: PYTHONPATH=server uvicorn app.main:app --reload --app-dir server
 ```
 
@@ -161,7 +157,7 @@ Endpoints:
 
 | Method | Path            | Description                                                |
 | ------ | --------------- | ---------------------------------------------------------- |
-| GET    | `/`             | Liveness check                                             |
+| GET    | `/`             | Built web client if present (`client/dist`), else liveness |
 | GET    | `/api/status`   | Latest cached device snapshot (kept fresh by the poller)   |
 | GET    | `/api/health`   | Observability: cache freshness, staleness, recent failures |
 | POST   | `/api/spa/on`   | Spa startup sequence                                       |
@@ -177,14 +173,37 @@ multiplies upstream load. Before the first successful poll, `/api/status`
 returns `503` (warming up); check `/api/health` for the reason. Until the first
 poll completes (or upstream is unreachable), there is no snapshot to serve.
 
-Action endpoints still run **synchronously** and block during the valve delay
-(a poll-for-result flow is deferred — see the roadmap); they go live to Jandy
+Action endpoints run **synchronously** and return quickly — AquaLink stages
+valve actuation internally, so no artificial wait is needed (spa shutdown keeps
+a short cooldown purge of the heat exchanger). They go live to Jandy
 since commands aren't cached, then trigger a refresh poll so the cache reflects
 the change quickly. Failures are run through the error taxonomy in `errors.py`:
 each is classified into a `FailureCategory` (auth / rate_limit /
 upstream_offline / network / config / unknown), recorded in the `StateCache`
 with its real message for debugging, and returned to the caller as a generic,
 category-appropriate HTTP error.
+
+## Web client
+
+A mobile-first React + TypeScript PWA in `client/` (Vite). It shows air/pool/spa
+temperatures, spa and pool state with on/off controls, a live/stale/offline
+health indicator, and installs to a phone home screen (add-to-home-screen —
+no app store).
+
+```bash
+just client        # Vite dev server on :5173, proxies /api to FastAPI on :8000
+just client-build  # production build into client/dist
+just client-lint   # oxlint
+```
+
+For development run `just server` (API) and `just client` (UI) side by side —
+the Vite proxy keeps everything same-origin, so there is no CORS configuration.
+In production, build the client and run only FastAPI: `main.py` serves
+`client/dist` at `/` when it exists, again same-origin.
+
+The client polls `/api/status` + `/api/health` every 15s (paused while the tab
+is hidden), and the service worker precaches only the app shell — API responses
+are never cached.
 
 ## Development
 
@@ -203,8 +222,6 @@ CI runs the same checks (ruff, mypy, pytest) on push — see
 
 Edit the constants at the top of [server/app/controls.py](server/app/controls.py):
 
-- `VALVE_DELAY`: Seconds to wait for valves and flow to establish before firing
-  the heater on startup.
 - `COOLDOWN_DELAY`: Seconds to keep the pump running after the heater turns off,
   to purge the heat exchanger before stopping flow.
 - `SPA_SET_POINT`: Target spa temperature in °F. Set to `None` to skip.
@@ -214,6 +231,8 @@ Edit the constants at the top of [server/app/controls.py](server/app/controls.py
 - `POOL_SET_POINT`: Target pool temperature in °F. Set to `None` to skip.
 - `POOL_HEATER`: Device key for the pool heater.
 - `POOL_SETPOINT_DEV`: Device key for the pool temperature set point.
+- `TEMP_SENSORS`: Device keys for the air/pool/spa temperature readings
+  (read-only sensors, surfaced as `temps` in status output).
 
 If you're unsure of the device key names on your system, run `status` first —
 it prints all available device keys.
