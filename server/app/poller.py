@@ -31,6 +31,10 @@ POLL_INTERVAL = 30.0
 #: Returns a fresh status snapshot, or raises on failure. No cache interaction.
 StatusFetcher = Callable[[], Awaitable[dict[str, Any]]]
 
+#: Invoked with each fresh snapshot after it lands in the cache. This is the
+#: hook the notification watcher hangs off — the poller stays a dumb loop.
+SnapshotHook = Callable[[dict[str, Any]], Awaitable[None]]
+
 
 class Poller:
     """Owns the single background poll loop and records outcomes in the cache."""
@@ -41,10 +45,12 @@ class Poller:
         fetch: StatusFetcher,
         *,
         interval: float = POLL_INTERVAL,
+        on_snapshot: Optional[SnapshotHook] = None,
     ) -> None:
         self._cache = cache
         self._fetch = fetch
         self._interval = interval
+        self._on_snapshot = on_snapshot
         self._task: Optional[asyncio.Task[None]] = None
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
@@ -65,6 +71,11 @@ class Poller:
             logger.warning("poll failed: %s (%s)", category.value, exc)
         else:
             self._cache.record_success(snapshot)
+            if self._on_snapshot is not None:
+                try:
+                    await self._on_snapshot(snapshot)
+                except Exception:  # noqa: BLE001 - hook must never kill the loop
+                    logger.exception("snapshot hook failed")
 
     def request_refresh(self) -> None:
         """Ask the loop to poll now instead of waiting out the interval.

@@ -30,6 +30,10 @@ check: lint format-check typecheck test
 server:
     {{python}} -m uvicorn app.main:app --app-dir server --reload
 
+# generate a VAPID keypair for Web Push (paste the private key into .env)
+vapid-keys:
+    {{python}} -m app.push
+
 # frontend (client/)
 
 client:

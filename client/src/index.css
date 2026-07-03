@@ -72,6 +72,67 @@ body {
   letter-spacing: -0.02em;
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.bell-button {
+  border: none;
+  background: none;
+  padding: 0.4rem;
+  border-radius: 50%;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bell-button.enabled {
+  color: var(--accent);
+}
+
+.bell-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.banner-nudge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.625rem;
+}
+
+.nudge-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+}
+
+.nudge-enable {
+  border: none;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.875rem;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.nudge-enable:active {
+  background: var(--accent-press);
+}
+
+.nudge-enable:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .health {
   display: inline-flex;
   align-items: center;

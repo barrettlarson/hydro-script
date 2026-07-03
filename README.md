@@ -78,6 +78,8 @@ server/
     poller.py     # single background loop: polls Jandy ~30s, writes the StateCache
     errors.py     # error taxonomy: classify(exc) -> FailureCategory, HTTP mapping
     cache.py      # StateCache: last snapshot, staleness, bounded failure history
+    push.py       # Web Push: VAPID config, per-device subscription store, sender
+    watcher.py    # heat-watch logic: turns poll snapshots into progress/ready pushes
   tests/          # fake-device tests; no hardware required
 client/           # React + TypeScript PWA (Vite); mobile-first UI over the API
 justfile          # task runner (cross-platform)
@@ -110,11 +112,19 @@ never commit):
 IAQUALINK_USER=you@example.com
 IAQUALINK_PASS=yourpassword
 SESSION_SECRET=<any long random string, e.g. from `openssl rand -hex 32`>
+VAPID_PRIVATE_KEY=<from `just vapid-keys`>
 ```
 
 `SESSION_SECRET` signs the web app's session cookies. It's optional — without
 it a random per-boot secret is used and every server restart (including
 `--reload` in dev) logs everyone out.
+
+`VAPID_PRIVATE_KEY` enables Web Push notifications ("spa is ready"). It's also
+optional — without it push simply reports disabled and the UI hides the
+notification controls. Generate one with `just vapid-keys` and paste the
+printed line into `.env`; the public key is derived from it at startup, so
+there's no second key to keep in sync. Changing the key invalidates every
+device's push subscription, so set it once and keep it.
 
 ## CLI usage
 
@@ -178,6 +188,9 @@ Endpoints:
 | POST   | `/api/spa/temp` | Set spa target temp (JSON `{"temp": N}`, bounds-checked)   |
 | POST   | `/api/pool/temp`| Set pool target temp (JSON `{"temp": N}`, bounds-checked)  |
 | POST   | `/api/safety`   | Idempotent safety shutdown                                 |
+| GET    | `/api/push/config`      | Push availability, VAPID public key, this device's enrollment |
+| POST   | `/api/push/subscribe`   | Register this browser's push subscription (JSON `{"subscription"}`) |
+| POST   | `/api/push/unsubscribe` | Remove this device's push subscription                |
 
 ### Authentication
 
@@ -239,6 +252,25 @@ In production, build the client and run only FastAPI: `main.py` serves
 The client polls `/api/status` + `/api/health` every 15s (paused while the tab
 is hidden), and the service worker precaches only the app shell — API responses
 are never cached.
+
+### Notifications ("spa is ready")
+
+If `VAPID_PRIVATE_KEY` is set (see [Setup](#setup)), the app can send **Web
+Push** notifications when the water reaches its target temperature. Turning on
+the spa or pool starts a heat watch for *the device that pressed the button* —
+push subscriptions are per-browser, which is what makes "notify only me" work
+under the single shared login. While heating, a silent notification updates in
+place about once per degree; when the target is reached, a final audible
+"ready" alert fires and the watch ends (one-shot — it won't re-fire while the
+temperature hovers). Turning the zone off from anywhere (app, Jandy's own app,
+the nightly safety cron) cancels the watch.
+
+Enrollment is the bell in the header, or the "Notify me" nudge that appears
+when you start a heat-up unenrolled. Devices that never enrolled are never
+notified. On iPhone/iPad, notifications require the app to be installed to the
+home screen (iOS 16.4+). Subscriptions live in `.data/push_subscriptions.json`
+(gitignored); pending watches are in-memory, so a server restart mid-heat-up
+drops the notification for that session.
 
 ## Development
 

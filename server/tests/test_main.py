@@ -10,10 +10,11 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app import auth, main
+from app import auth, main, push
 from app.aqualink import MissingCredentials
 from app.cache import StateCache
 from app.errors import FailureCategory
+from app.watcher import HeatWatcher
 from tests.conftest import FakeDevice
 
 
@@ -198,6 +199,188 @@ class TestTempEndpoints:
     def test_non_integer_temp_rejected(self, client: TestClient) -> None:
         r = client.post("/api/spa/temp", json={"temp": "hot"})
         assert r.status_code == 422
+
+
+SUBSCRIPTION = {"endpoint": "https://push.example/a", "keys": {"p256dh": "pk", "auth": "au"}}
+
+
+@pytest.fixture
+def push_enabled(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """Configure push in main with a fake VAPID identity and a temp store."""
+    monkeypatch.setattr(
+        main,
+        "vapid",
+        push.VapidConfig(private_key="priv", public_key="pub-key", subject="mailto:t@e.st"),
+    )
+    monkeypatch.setattr(main, "subscriptions", push.SubscriptionStore(tmp_path / "subs.json"))
+    monkeypatch.setattr(main, "watcher", HeatWatcher())
+
+
+def subscribe(client: TestClient) -> None:
+    r = client.post("/api/push/subscribe", json={"subscription": SUBSCRIPTION})
+    assert r.status_code == 200
+
+
+class TestPushEndpoints:
+    def test_push_endpoints_are_auth_gated(self, anon_client: TestClient) -> None:
+        assert anon_client.get("/api/push/config").status_code == 401
+        assert anon_client.post("/api/push/subscribe", json={}).status_code == 401
+        assert anon_client.post("/api/push/unsubscribe").status_code == 401
+
+    def test_config_reports_disabled_without_vapid(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(main, "vapid", None)
+        body = client.get("/api/push/config").json()
+        assert body == {"enabled": False, "public_key": None, "subscribed": False}
+
+    @pytest.mark.usefixtures("push_enabled")
+    def test_subscribe_then_config_shows_subscribed(self, client: TestClient) -> None:
+        body = client.get("/api/push/config").json()
+        assert body == {"enabled": True, "public_key": "pub-key", "subscribed": False}
+        subscribe(client)
+        body = client.get("/api/push/config").json()
+        assert body["subscribed"] is True
+
+    @pytest.mark.usefixtures("push_enabled")
+    def test_unsubscribe_clears_subscription(self, client: TestClient) -> None:
+        subscribe(client)
+        assert client.post("/api/push/unsubscribe").status_code == 200
+        assert client.get("/api/push/config").json()["subscribed"] is False
+
+    @pytest.mark.usefixtures("push_enabled")
+    def test_subscribe_without_endpoint_422(self, client: TestClient) -> None:
+        r = client.post("/api/push/subscribe", json={"subscription": {"keys": {}}})
+        assert r.status_code == 422
+
+    def test_subscribe_when_disabled_503(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(main, "vapid", None)
+        r = client.post("/api/push/subscribe", json={"subscription": SUBSCRIPTION})
+        assert r.status_code == 503
+
+
+class TestHeatWatchLifecycle:
+    @pytest.mark.usefixtures("push_enabled")
+    def test_spa_on_from_subscribed_device_latches_watch(self, client: TestClient) -> None:
+        subscribe(client)
+        client.post("/api/spa/on")
+        assert main.watcher.watching("spa")
+
+    @pytest.mark.usefixtures("push_enabled")
+    def test_spa_on_without_subscription_starts_no_watch(self, client: TestClient) -> None:
+        # strictly per-device: no subscription, no notification, no watch
+        client.post("/api/spa/on")
+        assert not main.watcher.watching("spa")
+
+    @pytest.mark.usefixtures("push_enabled")
+    def test_spa_off_cancels_watch(self, client: TestClient) -> None:
+        subscribe(client)
+        client.post("/api/spa/on")
+        client.post("/api/spa/off")
+        assert not main.watcher.watching("spa")
+
+    @pytest.mark.usefixtures("push_enabled")
+    def test_pool_on_steals_the_heater_and_the_watch(self, client: TestClient) -> None:
+        subscribe(client)
+        client.post("/api/spa/on")
+        client.post("/api/pool/on")
+        assert not main.watcher.watching("spa")
+        assert main.watcher.watching("pool")
+
+    @pytest.mark.usefixtures("push_enabled")
+    def test_safety_cancels_all_watches(self, client: TestClient) -> None:
+        subscribe(client)
+        client.post("/api/spa/on")
+        client.post("/api/safety")
+        assert not main.watcher.watching("spa")
+
+    @pytest.mark.usefixtures("push_enabled")
+    def test_failed_action_starts_no_watch(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        subscribe(client)
+
+        async def broken(_client: Any) -> dict[str, FakeDevice]:
+            raise ConnectionError("no route to host")
+
+        monkeypatch.setattr(main, "open_devices", broken)
+        assert client.post("/api/spa/on").status_code == 503
+        assert not main.watcher.watching("spa")
+
+
+def ready_snapshot() -> dict[str, Any]:
+    """A snapshot in which the spa has reached its target."""
+    return {
+        "devices": {
+            "spa_heater": {"state": "1", "label": "ON"},
+            "spa_set_point": {"state": "102", "label": "102°F"},
+            "pool_heater": {"state": "0", "label": "OFF"},
+            "pool_set_point": {"state": "84", "label": "84°F"},
+        },
+        "temps": {"air": 75.0, "spa": 102.0, "pool": None},
+    }
+
+
+class TestNotifyFromSnapshot:
+    @pytest.mark.usefixtures("push_enabled")
+    async def test_ready_push_is_delivered_to_the_acting_device(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        subscribe(client)
+        client.post("/api/spa/on")
+        sent: list[tuple[dict[str, Any], dict[str, Any]]] = []
+
+        async def fake_send(
+            sub: dict[str, Any], payload: dict[str, Any], _vapid: Any, **_kw: Any
+        ) -> bool:
+            sent.append((sub, payload))
+            return True
+
+        monkeypatch.setattr(main.push, "send_push", fake_send)
+        await main.notify_from_snapshot(ready_snapshot())
+        assert len(sent) == 1
+        sub, payload = sent[0]
+        assert sub == SUBSCRIPTION
+        assert payload["ready"] is True
+        assert payload["tag"] == "heat-spa"
+        assert "ready" in payload["title"].lower()
+        # one-shot: the watch is gone, a second snapshot sends nothing
+        await main.notify_from_snapshot(ready_snapshot())
+        assert len(sent) == 1
+
+    @pytest.mark.usefixtures("push_enabled")
+    async def test_gone_subscription_is_pruned(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        subscribe(client)
+        client.post("/api/spa/on")
+
+        async def gone(*_a: Any, **_kw: Any) -> bool:
+            return False
+
+        monkeypatch.setattr(main.push, "send_push", gone)
+        await main.notify_from_snapshot(ready_snapshot())
+        assert client.get("/api/push/config").json()["subscribed"] is False
+        assert not main.watcher.watching("spa")
+
+    @pytest.mark.usefixtures("push_enabled")
+    async def test_delivery_failure_is_swallowed(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        subscribe(client)
+        client.post("/api/spa/on")
+
+        async def boom(*_a: Any, **_kw: Any) -> bool:
+            raise RuntimeError("push service down")
+
+        monkeypatch.setattr(main.push, "send_push", boom)
+        await main.notify_from_snapshot(ready_snapshot())  # must not raise
+
+    async def test_noop_when_push_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(main, "vapid", None)
+        await main.notify_from_snapshot(ready_snapshot())  # must not raise
 
 
 class TestFailurePath:

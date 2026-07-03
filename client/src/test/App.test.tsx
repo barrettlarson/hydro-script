@@ -30,6 +30,25 @@ vi.mock("../api", async (importOriginal) => {
   };
 });
 
+vi.mock("../usePush", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../usePush")>();
+  return { ...actual, usePush: vi.fn() };
+});
+
+import { usePush, type PushControls } from "../usePush";
+
+function mockPush(overrides: Partial<PushControls> = {}): PushControls {
+  const controls: PushControls = {
+    state: "unavailable",
+    busy: false,
+    enable: vi.fn().mockResolvedValue(undefined),
+    disable: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  };
+  vi.mocked(usePush).mockReturnValue(controls);
+  return controls;
+}
+
 const baseStatus: Status = {
   devices: {
     spa_pump: { state: "0", label: "OFF" },
@@ -63,6 +82,7 @@ function card(name: string) {
 }
 
 beforeEach(() => {
+  mockPush(); // default: push unavailable, bell hidden
   vi.mocked(getStatus).mockResolvedValue(baseStatus);
   vi.mocked(getHealth).mockResolvedValue(okHealth);
   vi.mocked(postAction).mockResolvedValue({
@@ -205,6 +225,92 @@ describe("actions", () => {
     expect(
       await screen.findByText("controller unavailable"),
     ).toBeInTheDocument();
+  });
+});
+
+describe("notifications", () => {
+  const spaOn = async () => {
+    const spa = card("Spa");
+    const button = await spa.findByRole("button", { name: "Turn on" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+  };
+
+  it("hides the bell when push is unavailable", async () => {
+    render(<App />);
+    await screen.findByText("75");
+    expect(screen.queryByRole("button", { name: /notif/i })).not.toBeInTheDocument();
+  });
+
+  it("enables notifications from the bell", async () => {
+    const push = mockPush({ state: "off" });
+    render(<App />);
+    const bell = await screen.findByRole("button", {
+      name: "Notify this device when the water is ready",
+    });
+    expect(bell).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(bell);
+    await waitFor(() => expect(push.enable).toHaveBeenCalled());
+  });
+
+  it("disables notifications from the bell when enrolled", async () => {
+    const push = mockPush({ state: "enabled" });
+    render(<App />);
+    const bell = await screen.findByRole("button", {
+      name: /notifications on for this device/i,
+    });
+    expect(bell).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(bell);
+    await waitFor(() => expect(push.disable).toHaveBeenCalled());
+  });
+
+  it("shows a disabled bell when the browser permission is blocked", async () => {
+    mockPush({ state: "denied" });
+    render(<App />);
+    const bell = await screen.findByRole("button", {
+      name: /blocked in your browser settings/i,
+    });
+    expect(bell).toBeDisabled();
+  });
+
+  it("nudges to enroll when a heat-up starts unenrolled", async () => {
+    const push = mockPush({ state: "off" });
+    render(<App />);
+    expect(screen.queryByText(/ping when the water's ready/i)).not.toBeInTheDocument();
+    await spaOn();
+    expect(await screen.findByText(/ping when the water's ready/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Notify me" }));
+    await waitFor(() => expect(push.enable).toHaveBeenCalled());
+  });
+
+  it("does not nudge for the filter pump", async () => {
+    mockPush({ state: "off" });
+    render(<App />);
+    const pump = card("Filter pump");
+    const button = await pump.findByRole("button", { name: "Turn off" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await waitFor(() => expect(postAction).toHaveBeenCalled());
+    expect(screen.queryByText(/ping when the water's ready/i)).not.toBeInTheDocument();
+  });
+
+  it("does not nudge devices that are already enrolled", async () => {
+    mockPush({ state: "enabled" });
+    render(<App />);
+    await spaOn();
+    await waitFor(() => expect(postAction).toHaveBeenCalledWith("spa/on"));
+    expect(screen.queryByText(/ping when the water's ready/i)).not.toBeInTheDocument();
+  });
+
+  it("stays dismissed for the rest of the session", async () => {
+    mockPush({ state: "off" });
+    render(<App />);
+    await spaOn();
+    fireEvent.click(await screen.findByRole("button", { name: "Not now" }));
+    expect(screen.queryByText(/ping when the water's ready/i)).not.toBeInTheDocument();
+    await spaOn();
+    await waitFor(() => expect(postAction).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText(/ping when the water's ready/i)).not.toBeInTheDocument();
   });
 });
 

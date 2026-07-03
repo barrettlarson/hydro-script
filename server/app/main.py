@@ -8,10 +8,13 @@ change quickly.
 """
 
 import asyncio
+import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
+from uuid import uuid4
 
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
@@ -20,13 +23,16 @@ from iaqualink.client import AqualinkClient
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
-from app import auth, controls
+from app import auth, controls, push
 from app.aqualink import MissingCredentials, get_credentials, open_devices
 from app.cache import StateCache
 from app.errors import classify, http_response
 from app.poller import Poller
+from app.watcher import HeatWatcher
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 async def fetch_status() -> dict[str, Any]:
@@ -43,7 +49,54 @@ async def fetch_status() -> dict[str, Any]:
 
 # Shared state cache + the single poller that feeds it.
 cache = StateCache()
-poller = Poller(cache, fetch_status)
+
+# Web Push: per-device subscriptions (persisted) + in-memory heat watches.
+# vapid is None when VAPID_PRIVATE_KEY isn't configured — push endpoints then
+# report disabled and no watch is ever created.
+vapid = push.load_vapid_config()
+subscriptions = push.SubscriptionStore(
+    Path(
+        os.environ.get(
+            "PUSH_SUBSCRIPTIONS_FILE",
+            Path(__file__).resolve().parents[2] / ".data" / "push_subscriptions.json",
+        )
+    )
+)
+watcher = HeatWatcher()
+
+#: Push service queueing for in-place progress updates: a "96° now" that
+#: arrives after the phone was offline for an hour is worse than nothing.
+PROGRESS_TTL = 120
+
+
+async def notify_from_snapshot(snapshot: dict[str, Any]) -> None:
+    """Poller hook: turn a fresh snapshot into push deliveries.
+
+    Best-effort by design — a failed delivery is logged and skipped (the
+    poller also guards), and a subscription the push service reports gone is
+    pruned along with its watch.
+    """
+    if vapid is None:
+        return
+    for msg in watcher.evaluate(snapshot):
+        sub = subscriptions.get(msg.device_id)
+        if sub is None:
+            watcher.cancel(msg.zone)  # device unsubscribed mid-heat
+            continue
+        payload = {"title": msg.title, "body": msg.body, "tag": msg.tag, "ready": msg.ready}
+        try:
+            alive = await push.send_push(
+                sub, payload, vapid, ttl=3600 if msg.ready else PROGRESS_TTL
+            )
+        except Exception:  # noqa: BLE001 - delivery is best-effort
+            logger.exception("push delivery for %s failed", msg.tag)
+            continue
+        if not alive:
+            subscriptions.remove(msg.device_id)
+            watcher.cancel(msg.zone)
+
+
+poller = Poller(cache, fetch_status, on_snapshot=notify_from_snapshot)
 
 
 @asynccontextmanager
@@ -107,6 +160,18 @@ class AuthResult(BaseModel):
     ok: bool
 
 
+class PushConfig(BaseModel):
+    enabled: bool
+    public_key: Optional[str]
+    subscribed: bool
+
+
+class SubscribeRequest(BaseModel):
+    # The browser's PushSubscription.toJSON(): endpoint + keys. Stored opaque
+    # and passed straight through to pywebpush.
+    subscription: dict[str, Any]
+
+
 def _validate_setpoint(temp: int, bounds: tuple[int, int]) -> None:
     """Reject an out-of-bounds set point before any connection is opened.
 
@@ -150,6 +215,23 @@ async def _run_action(name: str, fn: Optional[Any] = None) -> list[str]:
         return messages
     except Exception as e:
         raise _handle_failure(e)
+
+
+def _device_id(request: Request) -> Optional[str]:
+    """The opaque per-browser id riding in the session cookie, if any."""
+    device_id = request.session.get("device_id")
+    return device_id if isinstance(device_id, str) else None
+
+
+def _start_heat_watch(zone: str, request: Request) -> None:
+    """Latch "notify when ready" for the acting device, if it can receive pushes.
+
+    Strictly per-device: a session without a push subscription starts no
+    watch, so nobody else gets pinged for someone else's button press.
+    """
+    device_id = _device_id(request)
+    if vapid is not None and device_id and subscriptions.get(device_id):
+        watcher.start(zone, device_id)
 
 
 # Endpoints
@@ -213,27 +295,70 @@ async def health() -> dict[str, Any]:
     return h
 
 
+@protected.get("/push/config", response_model=PushConfig)
+async def push_config(request: Request) -> PushConfig:
+    """What the client needs to offer notifications: server key + own state."""
+    device_id = _device_id(request)
+    return PushConfig(
+        enabled=vapid is not None,
+        public_key=vapid.public_key if vapid else None,
+        subscribed=bool(device_id and subscriptions.get(device_id)),
+    )
+
+
+@protected.post("/push/subscribe", response_model=AuthResult)
+async def push_subscribe(body: SubscribeRequest, request: Request) -> AuthResult:
+    """Store this browser's push subscription under its session device id."""
+    if vapid is None:
+        raise HTTPException(status_code=503, detail="Push is not configured on the server.")
+    if not body.subscription.get("endpoint"):
+        raise HTTPException(status_code=422, detail="Subscription must include an endpoint.")
+    device_id = _device_id(request)
+    if device_id is None:
+        # First subscription from this browser: mint the id that ties future
+        # actions to this device. It rides in the signed session cookie.
+        device_id = uuid4().hex
+        request.session["device_id"] = device_id
+    subscriptions.set(device_id, body.subscription)
+    return AuthResult(ok=True)
+
+
+@protected.post("/push/unsubscribe", response_model=AuthResult)
+async def push_unsubscribe(request: Request) -> AuthResult:
+    device_id = _device_id(request)
+    if device_id:
+        subscriptions.remove(device_id)
+    return AuthResult(ok=True)
+
+
 @protected.post("/spa/on", response_model=ActionResult)
-async def spa_on() -> ActionResult:
+async def spa_on(request: Request) -> ActionResult:
     messages = await _run_action("spa-on")
+    # Spa-on steals the shared heater from the pool, so any pool watch is moot.
+    watcher.cancel("pool")
+    _start_heat_watch("spa", request)
     return ActionResult(ok=True, action="spa-on", messages=messages)
 
 
 @protected.post("/spa/off", response_model=ActionResult)
 async def spa_off() -> ActionResult:
     messages = await _run_action("spa-off")
+    watcher.cancel("spa")
     return ActionResult(ok=True, action="spa-off", messages=messages)
 
 
 @protected.post("/pool/on", response_model=ActionResult)
-async def pool_on() -> ActionResult:
+async def pool_on(request: Request) -> ActionResult:
     messages = await _run_action("pool-on")
+    watcher.cancel("spa")  # mutual exclusion: pool-on turns the spa off
+    _start_heat_watch("pool", request)
     return ActionResult(ok=True, action="pool-on", messages=messages)
 
 
 @protected.post("/pool/off", response_model=ActionResult)
 async def pool_off() -> ActionResult:
     messages = await _run_action("pool-off")
+    watcher.cancel("pool")
     return ActionResult(ok=True, action="pool-off", messages=messages)
 
 
@@ -270,6 +395,7 @@ async def pool_temp(body: TempRequest) -> ActionResult:
 @protected.post("/safety", response_model=ActionResult)
 async def safety() -> ActionResult:
     messages = await _run_action("safety")
+    watcher.cancel_all()
     return ActionResult(ok=True, action="safety", messages=messages)
 
 
