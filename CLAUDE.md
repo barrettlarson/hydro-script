@@ -67,6 +67,7 @@ server/
   app/
     __init__.py
     aqualink.py   # connection helper (credentials, open_devices, require)
+    auth.py       # session auth: shared login vs .env cred, require_auth dependency
     controls.py   # pure logic: spa/pool on-off, status read (incl. temps), safety
     cli.py        # thin CLI wrapper (print/exit/argv)
     main.py       # FastAPI: action endpoints, status, health; serves client/dist
@@ -78,13 +79,14 @@ client/           # React + TypeScript PWA (Vite): mobile-first UI over the API
   src/
     api.ts             # typed API client (same-origin /api)
     usePolledState.ts  # polls status+health every 15s, pauses when hidden
-    App.tsx            # temps, spa/pool cards, health indicator
+    App.tsx            # temps, spa/pool cards, health indicator; login gate
+    Login.tsx          # shared-credential login form (shown on 401)
 CLAUDE.md
 README.md
 justfile              # task runner (cross-platform)
 pyproject.toml        # project metadata + deps, managed by uv
 uv.lock               # lockfile for reproducible installs
-.env                  # IAQUALINK_USER / IAQUALINK_PASS (gitignored, never commit)
+.env                  # IAQUALINK_USER / IAQUALINK_PASS / SESSION_SECRET (gitignored, never commit)
 ```
 
 ## Commands
@@ -184,14 +186,25 @@ upstream; `/api/status` is served from the `StateCache`.
       desktop projects). Backend endpoint tests in server/tests/test_main.py
       (fake connection layer). All wired into CI.
 
-## Phase 2.5 — Auth / login (gate before exposing actions)
+## Phase 2.5 — Auth / login (gate before exposing actions) [x]
 
-- [ ] Login UI in the frontend (Phase 2) + auth state handling
-- [ ] Backend: session/token issuance; protect all action + state endpoints
-- [ ] Credential provider returns the server-side `.env` cred for all sessions
-- [ ] Keep the 2 AM safety cron working without an interactive login (it uses
-      the server-side cred directly, independent of any user session)
-- [ ] Tests for auth gating (unauthenticated request is rejected)
+- [x] Login UI in the frontend (Login.tsx, shown when a poll returns 401) +
+      auth state handling (`unauthenticated` in usePolledState; sign-out in
+      the footer)
+- [x] Backend: signed-cookie sessions (SessionMiddleware + itsdangerous,
+      30-day rolling expiry, SameSite=Lax; SESSION_SECRET env var, random
+      per-boot fallback). All state + action endpoints moved onto a
+      `protected` APIRouter gated by `auth.require_auth` — fail-closed for
+      future routes; only /api/login + /api/logout are public. /api/health is
+      gated too (recent_failures leaks raw exception text).
+- [x] One shared login: form checked (constant-time, email case-insensitive)
+      against IAQUALINK_USER/PASS from `.env` — decided over a separate app
+      password since the household shares the Jandy account anyway. No user
+      store; the Jandy cred stays server-side for all sessions.
+- [x] Keep the 2 AM safety cron working without an interactive login (CLI
+      talks to Jandy directly, never through HTTP — unaffected)
+- [x] Tests for auth gating (server: TestAuth in test_main.py; client: auth
+      gate specs in App.test.tsx + a stateful login e2e spec)
 
 ## Phase 3 — SMS notifications [ ]
 
@@ -218,6 +231,9 @@ AWS is viable because iAquaLink is cloud-only (see architecture fact).
 - [ ] Nightly safety: EventBridge schedule instead of cron
 - [ ] HTTPS + enforce the Phase 2.5 auth gate on the deployed API (don't expose
       actions openly)
+- [ ] Flip the session cookie to `https_only=True` once behind TLS (main.py
+      SessionMiddleware); add a trivial unauthenticated `/api/ping` if a load
+      balancer health check needs one (/api/health is auth-gated)
 - [ ] Keep the 2 AM safety as an independent failsafe regardless of session logic
 - [ ] Cost writeup in README
 

@@ -8,7 +8,14 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import { ApiError, type Health, type Status } from "../api";
-import { getHealth, getStatus, postAction, postTemp } from "../api";
+import {
+  getHealth,
+  getStatus,
+  postAction,
+  postLogin,
+  postLogout,
+  postTemp,
+} from "../api";
 
 vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
@@ -18,6 +25,8 @@ vi.mock("../api", async (importOriginal) => {
     getHealth: vi.fn(),
     postAction: vi.fn(),
     postTemp: vi.fn(),
+    postLogin: vi.fn(),
+    postLogout: vi.fn(),
   };
 });
 
@@ -68,6 +77,8 @@ beforeEach(() => {
     messages: [],
     error: null,
   });
+  vi.mocked(postLogin).mockResolvedValue({ ok: true });
+  vi.mocked(postLogout).mockResolvedValue({ ok: true });
 });
 
 afterEach(() => {
@@ -97,6 +108,69 @@ describe("App read path", () => {
     render(<App />);
     expect(await screen.findByText(/warming up/i)).toBeInTheDocument();
     expect(screen.getByText("Offline")).toBeInTheDocument();
+  });
+});
+
+describe("auth gate", () => {
+  it("shows the login form instead of the app on a 401", async () => {
+    vi.mocked(getStatus).mockRejectedValue(new ApiError(401, "Not authenticated."));
+    vi.mocked(getHealth).mockRejectedValue(new ApiError(401, "Not authenticated."));
+    render(<App />);
+    expect(await screen.findByLabelText("Email")).toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Spa" })).not.toBeInTheDocument();
+  });
+
+  it("signs in and shows the app once the poll succeeds", async () => {
+    vi.mocked(getStatus).mockRejectedValue(new ApiError(401, "Not authenticated."));
+    vi.mocked(getHealth).mockRejectedValue(new ApiError(401, "Not authenticated."));
+    render(<App />);
+    const email = await screen.findByLabelText("Email");
+    fireEvent.change(email, { target: { value: "user@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "hunter2" },
+    });
+    // once the session exists, the re-poll succeeds
+    vi.mocked(getStatus).mockResolvedValue(baseStatus);
+    vi.mocked(getHealth).mockResolvedValue(okHealth);
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    await waitFor(() =>
+      expect(postLogin).toHaveBeenCalledWith("user@example.com", "hunter2"),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Spa" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the server's error and stays on the form when login fails", async () => {
+    vi.mocked(getStatus).mockRejectedValue(new ApiError(401, "Not authenticated."));
+    vi.mocked(getHealth).mockRejectedValue(new ApiError(401, "Not authenticated."));
+    vi.mocked(postLogin).mockRejectedValue(
+      new ApiError(401, "Invalid email or password."),
+    );
+    render(<App />);
+    const email = await screen.findByLabelText("Email");
+    fireEvent.change(email, { target: { value: "user@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "wrong" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(
+      await screen.findByText("Invalid email or password."),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Email")).toBeInTheDocument();
+  });
+
+  it("signs out from the footer and returns to the login form", async () => {
+    render(<App />);
+    const signOut = await screen.findByRole("button", { name: "Sign out" });
+    // after logout the next poll 401s
+    vi.mocked(getStatus).mockRejectedValue(new ApiError(401, "Not authenticated."));
+    vi.mocked(getHealth).mockRejectedValue(new ApiError(401, "Not authenticated."));
+    fireEvent.click(signOut);
+    await waitFor(() => expect(postLogout).toHaveBeenCalled());
+    expect(await screen.findByLabelText("Email")).toBeInTheDocument();
   });
 });
 

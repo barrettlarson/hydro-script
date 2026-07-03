@@ -7,19 +7,21 @@ client count never multiplies upstream load. Actions still go live to Jandy
 change quickly.
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from iaqualink.client import AqualinkClient
 from pydantic import BaseModel
+from starlette.middleware.sessions import SessionMiddleware
 
-from app import controls
-from app.aqualink import get_credentials, open_devices
+from app import auth, controls
+from app.aqualink import MissingCredentials, get_credentials, open_devices
 from app.cache import StateCache
 from app.errors import classify, http_response
 from app.poller import Poller
@@ -56,6 +58,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(lifespan=lifespan)
 
+# Signed-cookie sessions: no server-side session store, so sessions survive
+# restarts as long as SESSION_SECRET is stable (see auth.get_session_secret).
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=auth.get_session_secret(),
+    max_age=auth.SESSION_MAX_AGE,
+    same_site="lax",
+    https_only=False,  # dev is plain http; flip in Phase 4 behind TLS
+)
+
+# All state + action endpoints live on the protected router, so any future
+# route is gated by default; only login/logout are public.
+public = APIRouter(prefix="/api")
+protected = APIRouter(prefix="/api", dependencies=[Depends(auth.require_auth)])
+
 
 # Helpers
 
@@ -79,6 +96,15 @@ class ActionResult(BaseModel):
 
 class TempRequest(BaseModel):
     temp: int
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class AuthResult(BaseModel):
+    ok: bool
 
 
 def _validate_setpoint(temp: int, bounds: tuple[int, int]) -> None:
@@ -129,7 +155,27 @@ async def _run_action(name: str, fn: Optional[Any] = None) -> list[str]:
 # Endpoints
 
 
-@app.get("/api/status")
+@public.post("/login", response_model=AuthResult)
+async def login(body: LoginRequest, request: Request) -> AuthResult:
+    """Check the shared credential and mark the session authenticated."""
+    try:
+        ok = auth.verify_credentials(body.email, body.password)
+    except MissingCredentials:
+        raise HTTPException(status_code=500, detail="Server login is not configured.")
+    if not ok:
+        await asyncio.sleep(auth.FAILED_LOGIN_DELAY)
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    request.session["authenticated"] = True
+    return AuthResult(ok=True)
+
+
+@public.post("/logout", response_model=AuthResult)
+async def logout(request: Request) -> AuthResult:
+    request.session.clear()
+    return AuthResult(ok=True)
+
+
+@protected.get("/status")
 async def status() -> dict[str, Any]:
     """Return the latest cached snapshot, served without an upstream call.
 
@@ -152,7 +198,7 @@ def _iso(ts: Optional[float]) -> Optional[str]:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
-@app.get("/api/health")
+@protected.get("/health")
 async def health() -> dict[str, Any]:
     """Observability surface: cache status, staleness, failure history.
 
@@ -167,43 +213,43 @@ async def health() -> dict[str, Any]:
     return h
 
 
-@app.post("/api/spa/on", response_model=ActionResult)
+@protected.post("/spa/on", response_model=ActionResult)
 async def spa_on() -> ActionResult:
     messages = await _run_action("spa-on")
     return ActionResult(ok=True, action="spa-on", messages=messages)
 
 
-@app.post("/api/spa/off", response_model=ActionResult)
+@protected.post("/spa/off", response_model=ActionResult)
 async def spa_off() -> ActionResult:
     messages = await _run_action("spa-off")
     return ActionResult(ok=True, action="spa-off", messages=messages)
 
 
-@app.post("/api/pool/on", response_model=ActionResult)
+@protected.post("/pool/on", response_model=ActionResult)
 async def pool_on() -> ActionResult:
     messages = await _run_action("pool-on")
     return ActionResult(ok=True, action="pool-on", messages=messages)
 
 
-@app.post("/api/pool/off", response_model=ActionResult)
+@protected.post("/pool/off", response_model=ActionResult)
 async def pool_off() -> ActionResult:
     messages = await _run_action("pool-off")
     return ActionResult(ok=True, action="pool-off", messages=messages)
 
 
-@app.post("/api/pump/on", response_model=ActionResult)
+@protected.post("/pump/on", response_model=ActionResult)
 async def pump_on() -> ActionResult:
     messages = await _run_action("pump-on")
     return ActionResult(ok=True, action="pump-on", messages=messages)
 
 
-@app.post("/api/pump/off", response_model=ActionResult)
+@protected.post("/pump/off", response_model=ActionResult)
 async def pump_off() -> ActionResult:
     messages = await _run_action("pump-off")
     return ActionResult(ok=True, action="pump-off", messages=messages)
 
 
-@app.post("/api/spa/temp", response_model=ActionResult)
+@protected.post("/spa/temp", response_model=ActionResult)
 async def spa_temp(body: TempRequest) -> ActionResult:
     _validate_setpoint(body.temp, controls.SPA_SETPOINT_RANGE)
     messages = await _run_action(
@@ -212,7 +258,7 @@ async def spa_temp(body: TempRequest) -> ActionResult:
     return ActionResult(ok=True, action="spa-temp", messages=messages)
 
 
-@app.post("/api/pool/temp", response_model=ActionResult)
+@protected.post("/pool/temp", response_model=ActionResult)
 async def pool_temp(body: TempRequest) -> ActionResult:
     _validate_setpoint(body.temp, controls.POOL_SETPOINT_RANGE)
     messages = await _run_action(
@@ -221,10 +267,14 @@ async def pool_temp(body: TempRequest) -> ActionResult:
     return ActionResult(ok=True, action="pool-temp", messages=messages)
 
 
-@app.post("/api/safety", response_model=ActionResult)
+@protected.post("/safety", response_model=ActionResult)
 async def safety() -> ActionResult:
     messages = await _run_action("safety")
     return ActionResult(ok=True, action="safety", messages=messages)
+
+
+app.include_router(public)
+app.include_router(protected)
 
 
 # Static client (production).

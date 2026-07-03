@@ -9,7 +9,9 @@ export interface PolledState {
   health: Health | null
   /** True while the backend has no snapshot yet (503 from /api/status). */
   warmingUp: boolean
-  /** Message for an unexpected polling failure (not warm-up). */
+  /** True when the backend rejected the poll with 401 — show the login screen. */
+  unauthenticated: boolean
+  /** Message for an unexpected polling failure (not warm-up, not auth). */
   pollError: string | null
   /** Force an immediate refresh (used after actions). */
   refresh: () => Promise<void>
@@ -26,6 +28,7 @@ export function usePolledState(): PolledState {
   const [status, setStatus] = useState<Status | null>(null)
   const [health, setHealth] = useState<Health | null>(null)
   const [warmingUp, setWarmingUp] = useState(false)
+  const [unauthenticated, setUnauthenticated] = useState(false)
   const [pollError, setPollError] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
@@ -34,9 +37,15 @@ export function usePolledState(): PolledState {
     if (s.status === 'fulfilled') {
       setStatus(s.value)
       setWarmingUp(false)
+      setUnauthenticated(false)
+      setPollError(null)
+    } else if (s.reason instanceof ApiError && s.reason.status === 401) {
+      setUnauthenticated(true)
+      setWarmingUp(false)
       setPollError(null)
     } else if (s.reason instanceof ApiError && s.reason.status === 503) {
       setWarmingUp(true)
+      setUnauthenticated(false)
       setPollError(null)
     } else {
       setPollError(s.reason instanceof Error ? s.reason.message : String(s.reason))
@@ -58,5 +67,5 @@ export function usePolledState(): PolledState {
     }
   }, [refresh])
 
-  return { status, health, warmingUp, pollError, refresh }
+  return { status, health, warmingUp, unauthenticated, pollError, refresh }
 }
