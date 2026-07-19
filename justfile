@@ -34,6 +34,15 @@ server:
 vapid-keys:
     {{python}} -m app.push
 
+# docker (serves the production client bundle at :8000)
+
+up:
+    docker compose up -d --build
+    Start-Process http://localhost:8000
+
+down:
+    docker compose down
+
 # frontend (client/)
 
 client:
