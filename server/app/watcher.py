@@ -16,8 +16,9 @@ which emits:
 The target is read from the snapshot's set point on every evaluation, so
 nudging the slider mid-heat moves the goalpost instead of being ignored.
 
-Watches are in-memory: a server restart mid-heat loses the pending
-notification (subscriptions themselves persist — see ``push.py``).
+Watches persist through the shared document store (see ``app.store``), so a
+restart — or the next Lambda invocation, which is a different process
+entirely — picks up a heat-up already in progress.
 
 Pure logic, no I/O — delivery lives in ``main.py``; tests drive
 ``evaluate()`` with snapshot dicts.
@@ -145,3 +146,43 @@ class HeatWatcher:
                 )
                 watch.last_degree = degree
         return out
+
+    # persistence
+    #
+    # Watches were in-memory because the server was long-lived; under Lambda
+    # the process that starts a watch is never the process that would fire it,
+    # so they have to be written down. This also closes the backlog item where
+    # a restart mid-heat-up silently dropped the pending notification.
+
+    def to_doc(self) -> dict[str, Any]:
+        """Serialize active watches to a JSON-safe document."""
+        return {
+            zone: {
+                "device_id": w.device_id,
+                "started_at": w.started_at,
+                "last_degree": w.last_degree,
+            }
+            for zone, w in self._watches.items()
+        }
+
+    def load_doc(self, doc: Optional[dict[str, Any]]) -> None:
+        """Restore watches from a :meth:`to_doc` document, replacing current ones.
+
+        Unknown zones and malformed entries are dropped rather than raising —
+        a bad stored watch should cost one notification, not the poll loop.
+        """
+        self._watches.clear()
+        if not doc:
+            return
+        for zone, entry in doc.items():
+            if zone not in ZONES or not isinstance(entry, dict):
+                continue
+            device_id = entry.get("device_id")
+            if not isinstance(device_id, str):
+                continue
+            last_degree = entry.get("last_degree")
+            self._watches[zone] = _Watch(
+                device_id=device_id,
+                started_at=float(entry.get("started_at") or 0.0),
+                last_degree=int(last_degree) if last_degree is not None else None,
+            )

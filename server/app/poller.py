@@ -35,6 +35,11 @@ StatusFetcher = Callable[[], Awaitable[dict[str, Any]]]
 #: hook the notification watcher hangs off — the poller stays a dumb loop.
 SnapshotHook = Callable[[dict[str, Any]], Awaitable[None]]
 
+#: Invoked after every poll, success or failure. Persistence hangs off this
+#: rather than off the snapshot hook because a *failing* system is exactly
+#: when the recorded health matters most, and failures produce no snapshot.
+CycleHook = Callable[[], None]
+
 
 class Poller:
     """Owns the single background poll loop and records outcomes in the cache."""
@@ -46,11 +51,13 @@ class Poller:
         *,
         interval: float = POLL_INTERVAL,
         on_snapshot: Optional[SnapshotHook] = None,
+        on_cycle: Optional[CycleHook] = None,
     ) -> None:
         self._cache = cache
         self._fetch = fetch
         self._interval = interval
         self._on_snapshot = on_snapshot
+        self._on_cycle = on_cycle
         self._task: Optional[asyncio.Task[None]] = None
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
@@ -76,6 +83,11 @@ class Poller:
                     await self._on_snapshot(snapshot)
                 except Exception:  # noqa: BLE001 - hook must never kill the loop
                     logger.exception("snapshot hook failed")
+        if self._on_cycle is not None:
+            try:
+                self._on_cycle()
+            except Exception:  # noqa: BLE001 - hook must never kill the loop
+                logger.exception("cycle hook failed")
 
     def request_refresh(self) -> None:
         """Ask the loop to poll now instead of waiting out the interval.

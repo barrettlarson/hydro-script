@@ -7,10 +7,10 @@ Configuration (``.env``):
 - ``VAPID_SUBJECT`` — contact claim sent to push services; defaults to
   ``mailto:`` + IAQUALINK_USER.
 
-Subscriptions persist to one JSON file so a server restart doesn't silently
-drop everyone's notifications. Active heat *watches* are in-memory only (see
-``watcher.py``) — a restart mid-heat loses the pending notification, which is
-acceptable for now.
+Subscriptions persist in the shared document store (see ``app.store``) so a
+restart — or a cold Lambda execution environment — doesn't silently drop
+everyone's notifications. Active heat watches persist alongside them (see
+``watcher.py``).
 """
 
 from __future__ import annotations
@@ -21,8 +21,9 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Optional
+
+from app.store import SUBSCRIPTIONS_KEY, DocumentStore
 
 logger = logging.getLogger(__name__)
 
@@ -85,36 +86,27 @@ def generate_vapid_keys() -> tuple[str, str]:
 
 
 class SubscriptionStore:
-    """Per-device Web Push subscriptions, persisted as one JSON file.
+    """Per-device Web Push subscriptions, held as one document.
 
     Keyed by the opaque ``device_id`` carried in each browser's session
-    cookie. Writes are atomic (temp file + replace) so a crash can't leave a
-    truncated store. All access happens on the event loop thread, so no lock
-    is needed.
+    cookie. The whole map is read and written per operation rather than cached
+    on the instance: under Lambda a warm execution environment would otherwise
+    serve a copy loaded during some earlier invocation, and silently miss a
+    device that subscribed in between. The document is a household's worth of
+    subscriptions — a few hundred bytes each — so reading it whole is cheaper
+    than the bug.
     """
 
-    def __init__(self, path: Path) -> None:
-        self._path = path
-        self._subs: dict[str, dict[str, Any]] = self._load()
+    def __init__(self, store: DocumentStore) -> None:
+        self._store = store
 
-    def _load(self) -> dict[str, dict[str, Any]]:
-        try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return {}
-        except (OSError, json.JSONDecodeError):
-            logger.warning("could not read %s; starting with no subscriptions", self._path)
-            return {}
-        return data if isinstance(data, dict) else {}
-
-    def _save(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self._subs, indent=2), encoding="utf-8")
-        os.replace(tmp, self._path)
+    def _all(self) -> dict[str, dict[str, Any]]:
+        doc = self._store.get(SUBSCRIPTIONS_KEY)
+        return doc if isinstance(doc, dict) else {}
 
     def get(self, device_id: str) -> Optional[dict[str, Any]]:
-        return self._subs.get(device_id)
+        sub = self._all().get(device_id)
+        return sub if isinstance(sub, dict) else None
 
     def set(self, device_id: str, subscription: dict[str, Any]) -> None:
         """Store a device's subscription.
@@ -123,22 +115,22 @@ class SubscriptionStore:
         after re-login arrives under a new id with the same push endpoint —
         drop any old ids for that endpoint instead of accumulating orphans.
         """
+        subs = self._all()
         endpoint = subscription.get("endpoint")
         stale = [
-            did
-            for did, sub in self._subs.items()
-            if did != device_id and sub.get("endpoint") == endpoint
+            did for did, sub in subs.items() if did != device_id and sub.get("endpoint") == endpoint
         ]
         for did in stale:
-            del self._subs[did]
-        self._subs[device_id] = subscription
-        self._save()
+            del subs[did]
+        subs[device_id] = subscription
+        self._store.put(SUBSCRIPTIONS_KEY, subs)
 
     def remove(self, device_id: str) -> bool:
-        if device_id not in self._subs:
+        subs = self._all()
+        if device_id not in subs:
             return False
-        del self._subs[device_id]
-        self._save()
+        del subs[device_id]
+        self._store.put(SUBSCRIPTIONS_KEY, subs)
         return True
 
 

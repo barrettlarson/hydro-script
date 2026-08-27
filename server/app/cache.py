@@ -127,3 +127,57 @@ class StateCache:
                 for r in self._history
             ],
         }
+
+    # persistence
+    #
+    # The cache is process-local by nature, but a Lambda process lives for one
+    # invocation — so it is loaded at the start of a request and saved at the
+    # end. Round-tripping the failure history (not just the snapshot) is what
+    # keeps the health surface meaningful across invocations; it also closes
+    # the "failure trends don't survive a restart" gap for the long-running
+    # server, where it was only ever an accident of process lifetime.
+
+    def to_doc(self) -> dict[str, Any]:
+        """Serialize to a JSON-safe document (see :mod:`app.store`)."""
+        return {
+            "state": self.state,
+            "last_success_at": self.last_success_at,
+            "last_attempt_at": self.last_attempt_at,
+            "consecutive_failures": self.consecutive_failures,
+            "history": [
+                {"ts": r.ts, "category": r.category.value, "detail": r.detail}
+                for r in self._history
+            ],
+        }
+
+    def load_doc(self, doc: Optional[dict[str, Any]]) -> None:
+        """Restore from a :meth:`to_doc` document, replacing current contents.
+
+        Tolerant by design: a missing document leaves the cache untouched, and
+        an unrecognized failure category degrades to UNKNOWN rather than
+        raising. Stored state is observability data — it must never be able to
+        stop the app from starting.
+        """
+        if not doc:
+            return
+        state = doc.get("state")
+        self.state = state if isinstance(state, dict) else None
+        self.last_success_at = float(doc.get("last_success_at") or 0.0)
+        self.last_attempt_at = float(doc.get("last_attempt_at") or 0.0)
+        self.consecutive_failures = int(doc.get("consecutive_failures") or 0)
+
+        self._history.clear()  # keeps the deque's maxlen
+        for entry in doc.get("history") or []:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                category = FailureCategory(entry.get("category"))
+            except ValueError:
+                category = FailureCategory.UNKNOWN
+            self._history.append(
+                FailureRecord(
+                    ts=float(entry.get("ts") or 0.0),
+                    category=category,
+                    detail=str(entry.get("detail", "")),
+                )
+            )

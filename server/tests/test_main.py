@@ -14,6 +14,7 @@ from app import auth, main, push
 from app.aqualink import MissingCredentials
 from app.cache import StateCache
 from app.errors import FailureCategory
+from app.store import CACHE_KEY, WATCHES_KEY, MemoryStore
 from app.watcher import HeatWatcher
 from tests.conftest import FakeDevice
 
@@ -45,6 +46,10 @@ def anon_client(monkeypatch: pytest.MonkeyPatch, devices: dict[str, FakeDevice])
 
     monkeypatch.setattr(main, "open_devices", fake_open_devices)
     monkeypatch.setattr(main, "cache", StateCache())
+    # Memory-backed so the suite never touches the repo's .data/ directory.
+    store = MemoryStore()
+    monkeypatch.setattr(main, "store", store)
+    monkeypatch.setattr(main, "subscriptions", push.SubscriptionStore(store))
     return TestClient(main.app)
 
 
@@ -205,14 +210,16 @@ SUBSCRIPTION = {"endpoint": "https://push.example/a", "keys": {"p256dh": "pk", "
 
 
 @pytest.fixture
-def push_enabled(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
-    """Configure push in main with a fake VAPID identity and a temp store."""
+def push_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Configure push in main with a fake VAPID identity and a memory store."""
     monkeypatch.setattr(
         main,
         "vapid",
         push.VapidConfig(private_key="priv", public_key="pub-key", subject="mailto:t@e.st"),
     )
-    monkeypatch.setattr(main, "subscriptions", push.SubscriptionStore(tmp_path / "subs.json"))
+    store = MemoryStore()
+    monkeypatch.setattr(main, "store", store)
+    monkeypatch.setattr(main, "subscriptions", push.SubscriptionStore(store))
     monkeypatch.setattr(main, "watcher", HeatWatcher())
 
 
@@ -398,3 +405,54 @@ class TestFailurePath:
         # the caller sees the public message, not the raw exception text
         assert "no route to host" not in r.json()["detail"]
         assert main.cache.recent_failures[-1].detail == "no route to host"
+
+
+class TestPersistence:
+    """The store must reflect a request's changes once it returns.
+
+    These pin the invariant that ``persist_changes`` exists to guarantee: an
+    action endpoint added later that forgets to save would otherwise drop a
+    heat watch with no error and no failing test.
+    """
+
+    @pytest.mark.usefixtures("push_enabled")
+    def test_action_persists_the_watch_it_started(self, client: TestClient) -> None:
+        subscribe(client)
+        client.post("/api/spa/on")
+        watches = main.store.get(WATCHES_KEY) or {}
+        assert "spa" in watches
+
+    @pytest.mark.usefixtures("push_enabled")
+    def test_action_persists_a_cancellation(self, client: TestClient) -> None:
+        subscribe(client)
+        client.post("/api/spa/on")
+        client.post("/api/spa/off")
+        assert main.store.get(WATCHES_KEY) == {}
+
+    def test_action_without_watcher_changes_still_persists_the_cache(
+        self, client: TestClient
+    ) -> None:
+        # pump endpoints never touch the watcher; the cache still has to land
+        client.post("/api/pump/off")
+        cached = main.store.get(CACHE_KEY) or {}
+        assert cached["last_success_at"] > 0
+
+    def test_failed_action_persists_the_failure(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # health is most useful while broken, so a raising endpoint must save
+        async def broken(_client: Any) -> dict[str, FakeDevice]:
+            raise ConnectionError("no route to host")
+
+        monkeypatch.setattr(main, "open_devices", broken)
+        assert client.post("/api/spa/on").status_code == 503
+        cached = main.store.get(CACHE_KEY) or {}
+        assert cached["consecutive_failures"] == 1
+        assert cached["history"][-1]["category"] == FailureCategory.NETWORK.value
+
+    def test_reads_do_not_write(self, client: TestClient) -> None:
+        # clients poll /api/status every 15s; a read changes nothing worth saving
+        main.cache.record_success({"devices": {}, "temps": {}})
+        assert client.get("/api/status").status_code == 200
+        assert client.get("/api/health").status_code == 200
+        assert main.store.get(CACHE_KEY) is None

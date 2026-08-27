@@ -9,7 +9,6 @@ change quickly.
 
 import asyncio
 import logging
-import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +27,7 @@ from app.aqualink import MissingCredentials, get_credentials, open_devices
 from app.cache import StateCache
 from app.errors import classify, http_response
 from app.poller import Poller
+from app.store import CACHE_KEY, WATCHES_KEY, get_store
 from app.watcher import HeatWatcher
 
 load_dotenv()
@@ -50,19 +50,36 @@ async def fetch_status() -> dict[str, Any]:
 # Shared state cache + the single poller that feeds it.
 cache = StateCache()
 
-# Web Push: per-device subscriptions (persisted) + in-memory heat watches.
-# vapid is None when VAPID_PRIVATE_KEY isn't configured — push endpoints then
-# report disabled and no watch is ever created.
+# Web Push: per-device subscriptions + heat watches. vapid is None when
+# VAPID_PRIVATE_KEY isn't configured — push endpoints then report disabled and
+# no watch is ever created.
 vapid = push.load_vapid_config()
-subscriptions = push.SubscriptionStore(
-    Path(
-        os.environ.get(
-            "PUSH_SUBSCRIPTIONS_FILE",
-            Path(__file__).resolve().parents[2] / ".data" / "push_subscriptions.json",
-        )
-    )
-)
 watcher = HeatWatcher()
+
+# Everything above is process-local; the store is where it survives. Locally
+# that's JSON under .data/; on Lambda it's DynamoDB, because each invocation is
+# a different process and module globals don't carry across (see app.store).
+store = get_store()
+subscriptions = push.SubscriptionStore(store)
+
+
+def load_state() -> None:
+    """Populate the in-process cache and watches from the store."""
+    cache.load_doc(store.get(CACHE_KEY))
+    watcher.load_doc(store.get(WATCHES_KEY))
+
+
+def save_state() -> None:
+    """Write the in-process cache and watches back to the store.
+
+    Called after every poll and every action. Deliberately synchronous: the
+    file backend is sub-millisecond, and the DynamoDB backend only runs under
+    Lambda, where an execution environment handles one request at a time and
+    so has no event loop to starve.
+    """
+    store.put(CACHE_KEY, cache.to_doc())
+    store.put(WATCHES_KEY, watcher.to_doc())
+
 
 #: Push service queueing for in-place progress updates: a "96° now" that
 #: arrives after the phone was offline for an hour is worse than nothing.
@@ -96,12 +113,13 @@ async def notify_from_snapshot(snapshot: dict[str, Any]) -> None:
             watcher.cancel(msg.zone)
 
 
-poller = Poller(cache, fetch_status, on_snapshot=notify_from_snapshot)
+poller = Poller(cache, fetch_status, on_snapshot=notify_from_snapshot, on_cycle=save_state)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start the background poller for the app's lifetime, stop it on shutdown."""
+    load_state()  # pick up a heat-up already in progress across a restart
     poller.start()
     try:
         yield
@@ -121,10 +139,34 @@ app.add_middleware(
     https_only=False,  # dev is plain http; flip in Phase 4 behind TLS
 )
 
+
+async def persist_changes(request: Request) -> AsyncIterator[None]:
+    """Write cache + watches back to the store after any mutating request.
+
+    One per-request hook rather than a save at each mutation site: every action
+    endpoint changes the cache, the watches, or both, and an endpoint added
+    later that forgot to persist would drop a heat watch silently — no error,
+    no failing test, just a notification that never arrives.
+
+    Runs on failures too (a ``yield`` dependency's teardown still executes when
+    the endpoint raised), which is what gets a recorded failure into the store.
+    Reads are skipped: clients poll /api/status every 15s and a read never
+    changes anything worth writing.
+    """
+    try:
+        yield
+    finally:
+        if request.method != "GET":
+            save_state()
+
+
 # All state + action endpoints live on the protected router, so any future
-# route is gated by default; only login/logout are public.
+# route is gated — and persisted — by default; only login/logout are public.
 public = APIRouter(prefix="/api")
-protected = APIRouter(prefix="/api", dependencies=[Depends(auth.require_auth)])
+protected = APIRouter(
+    prefix="/api",
+    dependencies=[Depends(auth.require_auth), Depends(persist_changes)],
+)
 
 
 # Helpers
