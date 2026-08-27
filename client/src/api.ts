@@ -23,21 +23,17 @@ export interface Status {
   all_keys: string[]
 }
 
-export interface FailureRecord {
-  ts: string | null
-  category: string
-  detail: string
-}
-
+/**
+ * The server sends more (failure history, attempt timestamps, streak counts).
+ * Declaring only what we read keeps this an honest statement of coupling: a
+ * field absent here is one the server can change without touching the client.
+ * See FastAPI's /docs for the full response.
+ */
 export interface Health {
   status: 'ok' | 'degraded' | 'down'
-  is_stale: boolean
-  last_success_at: string | null
-  last_attempt_at: string | null
-  age_seconds: number | null
-  consecutive_failures: number
-  failures_by_category: Record<string, number>
-  recent_failures: FailureRecord[]
+  /** When the snapshot was last refreshed — not merely when a call last
+   *  succeeded. An action succeeds without producing new data. */
+  last_snapshot_at: string | null
 }
 
 export interface ActionResult {

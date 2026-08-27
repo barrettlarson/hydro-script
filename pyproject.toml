@@ -10,6 +10,7 @@ dependencies = [
     "uvicorn[standard]",
     "itsdangerous>=2.2.0",
     "pywebpush>=2.3.0",
+    "mangum>=0.19.0",
 ]
 
 [project.optional-dependencies]

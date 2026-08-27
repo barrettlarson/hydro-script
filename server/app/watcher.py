@@ -101,6 +101,15 @@ class HeatWatcher:
     def watching(self, zone: str) -> bool:
         return zone in self._watches
 
+    def any_active(self) -> bool:
+        """True if any zone is being watched.
+
+        The scheduled Lambda poll asks this to decide whether reaching
+        upstream is worth it: with nothing being watched, nobody is waiting on
+        a notification and demand-driven refresh covers the rest.
+        """
+        return bool(self._watches)
+
     def evaluate(self, snapshot: dict[str, Any]) -> list[PushMessage]:
         """Turn one status snapshot into the notifications it warrants."""
         devices = snapshot.get("devices", {})

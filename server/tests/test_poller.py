@@ -160,20 +160,79 @@ class TestRunLoop:
         await poller.stop()  # must not raise
 
 
+class FakeClock:
+    """Controllable clock so snapshot ageing is deterministic."""
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 class TestStatusEndpoint:
-    async def test_serves_cached_snapshot(self, monkeypatch):
-        cache = StateCache()
-        cache.record_success({"devices": {"pool_heater": "on"}})
+    """/api/status serves the cache, refreshing inline once it has aged out.
+
+    The inline refresh is what keeps the endpoint correct on Lambda, where no
+    background loop exists to keep the snapshot current.
+    """
+
+    def _wire(self, monkeypatch, fetch: FakeFetch, clock: FakeClock) -> StateCache:
+        cache = StateCache(clock=clock)
         monkeypatch.setattr(main, "cache", cache)
+        monkeypatch.setattr(main, "poller", Poller(cache, fetch))
+        return cache
+
+    async def test_fresh_snapshot_is_served_without_touching_upstream(self, monkeypatch):
+        fetch = FakeFetch()
+        clock = FakeClock()
+        cache = self._wire(monkeypatch, fetch, clock)
+        cache.record_success({"devices": {"pool_heater": "on"}})
 
         result = await main.status()
 
         assert result == {"devices": {"pool_heater": "on"}}
+        assert fetch.calls == 0  # this is the whole point of the cache
+
+    async def test_aged_snapshot_is_refreshed_inline(self, monkeypatch):
+        fetch = FakeFetch({"devices": {"pool_heater": "off"}})
+        clock = FakeClock()
+        cache = self._wire(monkeypatch, fetch, clock)
+        cache.record_success({"devices": {"pool_heater": "on"}})
+        clock.advance(main.SNAPSHOT_MAX_AGE + 1)
+
+        result = await main.status()
+
+        assert fetch.calls == 1
+        assert result == {"devices": {"pool_heater": "off"}}
+
+    async def test_action_success_does_not_count_as_a_fresh_snapshot(self, monkeypatch):
+        # An action confirms connectivity without producing a snapshot. If
+        # freshness were measured from last_success_at, the pre-action snapshot
+        # would look current and never refresh.
+        fetch = FakeFetch({"devices": {"spa_pump": "on"}})
+        clock = FakeClock()
+        cache = self._wire(monkeypatch, fetch, clock)
+        cache.record_success({"devices": {"spa_pump": "off"}})
+        clock.advance(main.SNAPSHOT_MAX_AGE - 5)
+        cache.record_success()  # the action
+        clock.advance(10)  # snapshot now aged out, last success is not
+
+        result = await main.status()
+
+        assert fetch.calls == 1
+        assert result == {"devices": {"spa_pump": "on"}}
 
     async def test_warming_up_returns_503(self, monkeypatch):
-        monkeypatch.setattr(main, "cache", StateCache())  # no successful poll yet
+        # no snapshot yet and upstream is unreachable
+        fetch = FakeFetch(error=AqualinkSystemOfflineException())
+        self._wire(monkeypatch, fetch, FakeClock())
 
         with pytest.raises(HTTPException) as exc_info:
             await main.status()
 
         assert exc_info.value.status_code == 503
+        assert fetch.calls == 1  # it did try before giving up

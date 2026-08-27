@@ -369,8 +369,11 @@ class TestNotifyFromSnapshot:
 
         monkeypatch.setattr(main.push, "send_push", gone)
         await main.notify_from_snapshot(ready_snapshot())
-        assert client.get("/api/push/config").json()["subscribed"] is False
+        # This drives the snapshot hook directly; the poller would persist
+        # right after it via on_cycle, and a request reloads stored state.
+        main.save_state()
         assert not main.watcher.watching("spa")
+        assert client.get("/api/push/config").json()["subscribed"] is False
 
     @pytest.mark.usefixtures("push_enabled")
     async def test_delivery_failure_is_swallowed(

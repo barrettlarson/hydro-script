@@ -14,12 +14,16 @@ const status = {
   all_keys: [],
 }
 
+// Deliberately the *whole* server payload, not the trimmed client type: this
+// mock stands in for the real API, and the client must tolerate extra fields.
 const health = {
   status: 'ok',
   is_stale: false,
   last_success_at: '2026-07-02T12:00:00+00:00',
+  last_snapshot_at: '2026-07-02T12:00:00+00:00',
   last_attempt_at: '2026-07-02T12:00:00+00:00',
   age_seconds: 3,
+  snapshot_age_seconds: 3,
   consecutive_failures: 0,
   failures_by_category: {},
   recent_failures: [],
@@ -72,7 +76,9 @@ test.describe('read path', () => {
       route.fulfill({ status: 503, json: { detail: 'Status is warming up.' } }),
     )
     await page.route('**/api/health', (route) =>
-      route.fulfill({ json: { ...health, status: 'down', last_success_at: null } }),
+      route.fulfill({
+        json: { ...health, status: 'down', last_success_at: null, last_snapshot_at: null },
+      }),
     )
     await page.goto('/')
     await expect(page.getByText(/warming up/i)).toBeVisible()

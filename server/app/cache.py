@@ -45,6 +45,10 @@ class StateCache:
     ) -> None:
         self.state: Optional[dict[str, Any]] = None
         self.last_success_at: float = 0.0
+        #: When `state` was last replaced. Distinct from last_success_at,
+        #: which any successful round-trip bumps — including actions, which
+        #: confirm connectivity without producing a snapshot.
+        self.last_snapshot_at: float = 0.0
         self.last_attempt_at: float = 0.0
         self.consecutive_failures: int = 0
         self.stale_after = stale_after
@@ -63,6 +67,7 @@ class StateCache:
         now = self._clock()
         if state is not None:
             self.state = state
+            self.last_snapshot_at = now
         self.last_success_at = now
         self.last_attempt_at = now
         self.consecutive_failures = 0
@@ -83,6 +88,18 @@ class StateCache:
         if self.last_success_at == 0.0:
             return None
         return self._clock() - self.last_success_at
+
+    def snapshot_age_seconds(self) -> Optional[float]:
+        """Seconds since the stored snapshot was last replaced, or None if never.
+
+        This — not :meth:`age_seconds` — is what answers "do I need to poll?".
+        An action bumps ``last_success_at`` without producing a snapshot, so
+        connectivity health and snapshot freshness are genuinely different
+        questions and only one of them is about the data being current.
+        """
+        if self.last_snapshot_at == 0.0:
+            return None
+        return self._clock() - self.last_snapshot_at
 
     def is_stale(self) -> bool:
         """True if there's no recent success (never, or older than stale_after)."""
@@ -118,8 +135,10 @@ class StateCache:
             "status": self.status(),
             "is_stale": self.is_stale(),
             "last_success_at": self.last_success_at or None,
+            "last_snapshot_at": self.last_snapshot_at or None,
             "last_attempt_at": self.last_attempt_at or None,
             "age_seconds": self.age_seconds(),
+            "snapshot_age_seconds": self.snapshot_age_seconds(),
             "consecutive_failures": self.consecutive_failures,
             "failures_by_category": self.failures_by_category(),
             "recent_failures": [
@@ -142,6 +161,7 @@ class StateCache:
         return {
             "state": self.state,
             "last_success_at": self.last_success_at,
+            "last_snapshot_at": self.last_snapshot_at,
             "last_attempt_at": self.last_attempt_at,
             "consecutive_failures": self.consecutive_failures,
             "history": [
@@ -163,6 +183,7 @@ class StateCache:
         state = doc.get("state")
         self.state = state if isinstance(state, dict) else None
         self.last_success_at = float(doc.get("last_success_at") or 0.0)
+        self.last_snapshot_at = float(doc.get("last_snapshot_at") or 0.0)
         self.last_attempt_at = float(doc.get("last_attempt_at") or 0.0)
         self.consecutive_failures = int(doc.get("consecutive_failures") or 0)
 

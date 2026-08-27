@@ -26,6 +26,7 @@ from app import auth, controls, push
 from app.aqualink import MissingCredentials, get_credentials, open_devices
 from app.cache import StateCache
 from app.errors import classify, http_response
+from app import poller as poller_module
 from app.poller import Poller
 from app.store import CACHE_KEY, WATCHES_KEY, get_store
 from app.watcher import HeatWatcher
@@ -140,19 +141,23 @@ app.add_middleware(
 )
 
 
-async def persist_changes(request: Request) -> AsyncIterator[None]:
-    """Write cache + watches back to the store after any mutating request.
+async def sync_state(request: Request) -> AsyncIterator[None]:
+    """Load stored state before handling a request; save it after if mutated.
 
-    One per-request hook rather than a save at each mutation site: every action
-    endpoint changes the cache, the watches, or both, and an endpoint added
-    later that forgot to persist would drop a heat watch silently — no error,
-    no failing test, just a notification that never arrives.
+    Loading up front is what makes a cold Lambda invocation correct — its
+    module globals carry nothing from the last one, so without this a request
+    would serve an empty cache. Under uvicorn the in-process objects are
+    already current and the load is a cheap no-op re-read.
 
-    Runs on failures too (a ``yield`` dependency's teardown still executes when
-    the endpoint raised), which is what gets a recorded failure into the store.
-    Reads are skipped: clients poll /api/status every 15s and a read never
-    changes anything worth writing.
+    Saving is one per-request hook rather than a call at each mutation site:
+    every action endpoint changes the cache, the watches, or both, and an
+    endpoint added later that forgot to persist would drop a heat watch
+    silently — no error, no failing test, just a notification that never
+    arrives. It runs on failures too (a ``yield`` dependency's teardown still
+    executes when the endpoint raised), which is what gets a recorded failure
+    into the store. Reads skip the write: a GET changes nothing worth saving.
     """
+    load_state()
     try:
         yield
     finally:
@@ -165,7 +170,7 @@ async def persist_changes(request: Request) -> AsyncIterator[None]:
 public = APIRouter(prefix="/api")
 protected = APIRouter(
     prefix="/api",
-    dependencies=[Depends(auth.require_auth), Depends(persist_changes)],
+    dependencies=[Depends(auth.require_auth), Depends(sync_state)],
 )
 
 
@@ -299,14 +304,38 @@ async def logout(request: Request) -> AuthResult:
     return AuthResult(ok=True)
 
 
+#: How old the stored snapshot may get before a read refreshes it inline.
+#: Matches the poller's floor — polling Jandy faster than this buys nothing.
+SNAPSHOT_MAX_AGE = poller_module.POLL_INTERVAL
+
+
+async def ensure_fresh_snapshot() -> None:
+    """Refresh the snapshot inline when it has aged past SNAPSHOT_MAX_AGE.
+
+    Under uvicorn the background loop normally keeps this satisfied and this
+    is a no-op. Under Lambda there is no loop, so demand drives refresh:
+    someone asking for status is the signal that the data matters right now,
+    which is a better trigger than a clock that runs whether or not anyone is
+    listening.
+
+    Note this measures *snapshot* age, not last success — an action confirms
+    connectivity without producing a snapshot, so the two differ exactly when
+    it matters (right after a button press).
+    """
+    age = cache.snapshot_age_seconds()
+    if age is not None and age <= SNAPSHOT_MAX_AGE:
+        return
+    await poller.poll_once()  # never raises; records failures into the cache
+
+
 @protected.get("/status")
 async def status() -> dict[str, Any]:
-    """Return the latest cached snapshot, served without an upstream call.
+    """Return the current snapshot, refreshing it first if it has aged out.
 
-    The background poller keeps this fresh; staleness/health is at /api/health.
-    Returns 503 only before the first successful poll (warming up or upstream
-    unreachable) — clients should consult /api/health for the reason.
+    Returns 503 only when there is no snapshot at all (never polled, or
+    upstream unreachable) — clients should consult /api/health for the reason.
     """
+    await ensure_fresh_snapshot()
     if cache.state is None:
         raise HTTPException(
             status_code=503,
@@ -331,6 +360,7 @@ async def health() -> dict[str, Any]:
     """
     h = cache.health()
     h["last_success_at"] = _iso(h["last_success_at"])
+    h["last_snapshot_at"] = _iso(h["last_snapshot_at"])
     h["last_attempt_at"] = _iso(h["last_attempt_at"])
     for record in h["recent_failures"]:
         record["ts"] = _iso(record["ts"])

@@ -432,8 +432,8 @@ export default function App() {
       />
 
       <footer className="app-footer">
-        {health?.last_success_at
-          ? `Updated ${new Date(health.last_success_at).toLocaleTimeString()}`
+        {health?.last_snapshot_at
+          ? `Updated ${new Date(health.last_snapshot_at).toLocaleTimeString()}`
           : "Waiting for first update…"}
         {" · "}
         <button

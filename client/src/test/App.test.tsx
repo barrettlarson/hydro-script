@@ -65,13 +65,7 @@ const baseStatus: Status = {
 
 const okHealth: Health = {
   status: "ok",
-  is_stale: false,
-  last_success_at: "2026-07-02T12:00:00+00:00",
-  last_attempt_at: "2026-07-02T12:00:00+00:00",
-  age_seconds: 3,
-  consecutive_failures: 0,
-  failures_by_category: {},
-  recent_failures: [],
+  last_snapshot_at: "2026-07-02T12:00:00+00:00",
 };
 
 function card(name: string) {

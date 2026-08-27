@@ -48,6 +48,7 @@ server/
     auth.py       # session auth: shared login vs .env cred, require_auth
     controls.py   # pure logic: spa/pool on-off, status read, safety
     cli.py        # thin CLI wrapper (print/exit/argv)
+    handlers.py   # Lambda entry points: http_handler (Mangum) + poll_handler
     main.py       # FastAPI: actions, status, health, push; serves client/dist
     poller.py     # poll loop feeding the StateCache (on_snapshot + on_cycle)
     errors.py     # error taxonomy: classify(exc) -> FailureCategory
@@ -137,6 +138,16 @@ Things a reader can't recover from the code:
   than stored, so the pair cannot drift out of sync.
 - **Safety never touches the filter pump** — circulation is not a heat risk.
 - The service worker **never caches `/api`**.
+- **`api.ts` types declare what the client consumes, not the full payload.**
+  They're hand-written, so a "mirror" would drift silently and look
+  authoritative while being wrong — a narrow type is instead an honest
+  statement of coupling, and TypeScript reads a wider response fine. `/docs`
+  is the discoverable source of truth. E2E mocks deliberately return the whole
+  server payload, so extra fields stay exercised. If real symmetry is ever
+  wanted, generate the types from the OpenAPI schema rather than hand-copying.
+- The footer's "Updated" time reads `last_snapshot_at`, not `last_success_at`:
+  an action succeeds without producing data, so the latter would timestamp the
+  button press while showing older temperatures.
 - Playwright gotcha: headless Chromium reports `Notification.permission` as
   `denied`; stub it in an initScript or push specs fail confusingly.
 
@@ -166,14 +177,24 @@ Account `330555373901`, region **us-east-1**. Decisions made 2026-08-27:
       backend keeps local dev unchanged; `STATE_TABLE` alone flips on DynamoDB.
       Documents are stored as JSON *strings* — DynamoDB has no float type and a
       marshalled map would hand back `Decimal` epoch timestamps.
-- [ ] `handlers.py`: `Mangum(app, lifespan="off")` for HTTP — lifespan MUST be
-      off or the HTTP function starts a poller it cannot run — plus a poll
-      handler dispatching scheduled polls and the 2 AM safety event
-- [ ] Replace `poller.request_refresh()` with an inline poll under Lambda
-      (there is no loop to wake)
-- [ ] Poll only while a heat watch is active; let `/api/status` poll inline when
-      the snapshot is older than ~30s. Fresher UI than the old 30s loop, and it
-      cuts Jandy logins from ~43k/month to near zero when idle.
+- [x] `handlers.py`: `http_handler = Mangum(app, lifespan="off")` — lifespan
+      MUST be off or the HTTP function starts a poller it cannot run — plus
+      `poll_handler`, which routes on the event's `action` (`poll` | `safety`)
+      so both schedules share one function.
+- [x] Demand-driven refresh instead of a clock. `/api/status` calls
+      `ensure_fresh_snapshot()`, polling inline when the snapshot has aged past
+      `SNAPSHOT_MAX_AGE` (= the poller's 30s floor); the scheduled function
+      only reaches upstream while a heat watch is active. Idle systems make no
+      upstream calls; an open app drives ~2/min, same as the old loop.
+      `request_refresh()` stays as-is — it's a harmless no-op without a loop,
+      and the freshness check covers the Lambda case more cleanly.
+- [x] `StateCache.last_snapshot_at` + `snapshot_age_seconds()`. Freshness could
+      not be read off `last_success_at`, which actions bump without producing a
+      snapshot — measuring from it would have served a pre-action snapshot
+      forever. `is_stale()`/`age_seconds()` still answer the connectivity
+      question for /api/health.
+- [x] `sync_state` request dependency loads stored state before every request
+      (a cold invocation's globals are empty) and saves after mutating ones.
 - [ ] Secrets in SSM Parameter Store (SecureString), not function env vars.
       Includes `VAPID_PRIVATE_KEY` — rotating it silently invalidates every
       push subscription, so treat it like `SESSION_SECRET`: set once, persist.
