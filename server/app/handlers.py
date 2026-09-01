@@ -15,6 +15,11 @@ background poller, and a Lambda execution environment is frozen between
 invocations — the loop would stop mid-``await`` and never reliably resume. The
 poll function exists precisely because that background loop cannot.
 
+Secrets arrive from SSM, not from the function environment, which carries only
+``SSM_PARAM_PATH`` and ``STATE_TABLE`` (see :mod:`app.config`). This module is
+where that bootstrap runs, because it is the one entry point that is always
+Lambda; the CLI and the dev server keep using ``.env``.
+
 Polling policy: a scheduled tick only reaches upstream when a heat watch is
 active. Nothing else needs a clock — `/api/status` refreshes on demand when
 its snapshot has aged out (see ``main.ensure_fresh_snapshot``), so an idle
@@ -31,7 +36,15 @@ from typing import Any, Optional
 
 from mangum import Mangum
 
-from app import controls, main
+from app import config
+
+# Secrets first, and that ordering is load-bearing: importing ``main`` builds
+# the push VAPID config and the state store at module scope, and both read the
+# environment as they go. Fetching after the import would leave push disabled
+# on every cold start. Hence the deliberately late app imports below.
+config.load_secrets()
+
+from app import controls, main  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

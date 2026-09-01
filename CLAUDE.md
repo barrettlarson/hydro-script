@@ -49,6 +49,7 @@ server/
     controls.py   # pure logic: spa/pool on-off, status read, safety
     cli.py        # thin CLI wrapper (print/exit/argv)
     handlers.py   # Lambda entry points: http_handler (Mangum) + poll_handler
+    config.py     # secret loading: SSM Parameter Store -> os.environ
     main.py       # FastAPI: actions, status, health, push; serves client/dist
     poller.py     # poll loop feeding the StateCache (on_snapshot + on_cycle)
     errors.py     # error taxonomy: classify(exc) -> FailureCategory
@@ -65,6 +66,8 @@ client/           # React + TypeScript PWA (Vite), mobile-first
     Login.tsx          # shared-credential login form (shown on 401)
     sw.ts              # service worker: precache + push display
     push.ts / usePush.ts  # subscribe/unsubscribe, permission state
+scripts/              # Put-Secrets.ps1: mirror .env into SSM (SecureString)
+template.yaml         # AWS SAM: two functions, state table, schedules
 justfile              # task runner
 pyproject.toml        # deps, managed by uv (+ uv.lock)
 .env                  # IAQUALINK_USER/PASS, SESSION_SECRET, VAPID_PRIVATE_KEY
@@ -195,17 +198,28 @@ Account `330555373901`, region **us-east-1**. Decisions made 2026-08-27:
       question for /api/health.
 - [x] `sync_state` request dependency loads stored state before every request
       (a cold invocation's globals are empty) and saves after mutating ones.
-- [ ] Secrets in SSM Parameter Store (SecureString), not function env vars.
-      Includes `VAPID_PRIVATE_KEY` — rotating it silently invalidates every
-      push subscription, so treat it like `SESSION_SECRET`: set once, persist.
-- [ ] Raise the function off its defaults: timeout 3s -> 30s, memory
-      128 -> 512 MB (more memory buys proportionally more CPU, so cold starts
-      shorten too)
-- [ ] Execution role needs DynamoDB + SSM on top of its Logs-only policy
-- [ ] Reserved concurrency ~5 on HTTP, **1** on the poller — the store is
-      last-write-wins, and concurrency 1 is what makes that safe for watches
-- [ ] Nightly safety on an EventBridge schedule instead of cron, kept as an
-      independent failsafe regardless of session logic
+- [x] Secrets in SSM Parameter Store (SecureString), not function env vars.
+      `config.load_secrets()` copies every parameter under `SSM_PARAM_PATH`
+      into `os.environ` at cold start, so the four existing env readers are
+      untouched and local dev keeps using `.env` (no path set = no-op).
+      Called from `handlers.py` *before* `import main` — main builds the VAPID
+      config and the store at module scope, so a later fetch would leave push
+      dead on every cold start. Upload with `just put-secrets`, which mirrors
+      `.env` into SSM; deliberately a human action, never part of `sam deploy`,
+      because regenerating `VAPID_PRIVATE_KEY` silently invalidates every push
+      subscription and `SESSION_SECRET` logs everyone out. Note the template
+      *cannot* do this: `{{resolve:ssm-secure:...}}` is unsupported on Lambda
+      env vars, and the plaintext form puts the value back in the function
+      config.
+- [~] `template.yaml` written (SAM). Covers, but has **not yet been
+      deployed**: timeout 30s / memory 512 MB, DynamoDB + SSM policies per
+      function, reserved concurrency 5 (HTTP) and 1 (poll), both EventBridge
+      schedules, 30-day log retention, and a `Retain` policy on the state
+      table so a stack delete can't take every push subscription with it.
+      Blocked on the build artifact: `CodeUri: build/` has nothing to point at
+      yet, and `main._client_dist` resolves `parents[2]/client/dist`, which
+      lands outside `/var/task` in a zip layout — decide the artifact layout
+      before the first `sam deploy`. SAM CLI is not installed locally.
 - [ ] Flip the session cookie to `https_only=True` behind TLS; add an
       unauthenticated `/api/ping` if a health check needs one
 - [ ] Cost writeup in README

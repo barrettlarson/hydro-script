@@ -34,6 +34,16 @@ server:
 vapid-keys:
     {{python}} -m app.push
 
+# aws
+
+# upload .env secrets to SSM as SecureStrings (pass -DryRun to preview)
+put-secrets *args:
+    powershell -NoProfile -File scripts/Put-Secrets.ps1 {{args}}
+
+# names and metadata of what is stored — never the values
+show-secrets:
+    aws ssm get-parameters-by-path --path /hydro-script/prod --region us-east-1 --query "Parameters[].[Name,Type,Version,LastModifiedDate]" --output table
+
 # docker (serves the production client bundle at :8000)
 
 up:

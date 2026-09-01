@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  hydro-script — pool/spa automation for a Jandy iAquaLink controller.
+  Two Lambdas off one zip artifact: FastAPI behind a Function URL, and a
+  scheduled function that polls upstream and runs the nightly safety shutoff.
+
+# iAquaLink has no local API — the controller is reached through Jandy's cloud
+# — so nothing here needs to run at the house, and this shape lands in the
+# perpetual free tier where always-on Fargate/Lightsail would be ~$5-15/mo.
+#
+# Build the artifact first (`just build-lambda`), then:
+#   sam deploy --guided        # first time; writes samconfig.toml
+#   sam deploy                 # thereafter
+#
+# Secrets are NOT in this template. They live in SSM Parameter Store as
+# SecureStrings, uploaded once by scripts/Put-Secrets.ps1 and read at cold
+# start by app/config.py. CloudFormation's {{resolve:ssm-secure:...}} is not
+# supported on Lambda environment variables, and the plaintext form would put
+# the values back into the function configuration for anyone with
+# lambda:GetFunctionConfiguration to read.
+
+Parameters:
+  SecretsPath:
+    Type: String
+    Default: /hydro-script/prod
+    Description: >
+      SSM path prefix holding the SecureString secrets. Must match the -Path
+      passed to scripts/Put-Secrets.ps1.
+
+  PollSchedule:
+    Type: String
+    Default: rate(1 minute)
+    Description: >
+      How often the poll function wakes. A tick only reaches Jandy while a
+      heat watch is active, so an idle system costs one no-op invocation and
+      two DynamoDB reads. One minute is what keeps heat-up progress
+      notifications timely; ~43k invocations/month sits well inside the free
+      tier's 1M requests and 400k GB-seconds.
+
+  SafetySchedule:
+    Type: String
+    Default: cron(0 2 * * ? *)
+    Description: Nightly safety shutoff, in SafetyTimezone.
+
+  SafetyTimezone:
+    Type: String
+    Default: America/New_York
+    Description: >
+      IANA zone for the safety schedule. Named explicitly rather than left in
+      UTC so the shutoff stays at 2am local across daylight saving.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [x86_64]
+    CodeUri: build/
+    # Defaults of 3s / 128MB are not survivable here: a cold start imports
+    # FastAPI and boto3 and makes an SSM round trip before serving anything,
+    # and Lambda scales CPU with memory, so 512MB buys a shorter cold start
+    # as much as it buys headroom.
+    Timeout: 30
+    MemorySize: 512
+    Environment:
+      Variables:
+        SSM_PARAM_PATH: !Ref SecretsPath
+        # Presence of this alone flips app.store onto DynamoDB (see get_store).
+        STATE_TABLE: !Ref StateTable
+        LOG_LEVEL: INFO
+
+Resources:
+  # ---------------------------------------------------------------- HTTP ---
+  HttpFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: hydro-script-http
+      Handler: app.handlers.http_handler
+      Description: FastAPI via Mangum, behind a Function URL.
+      # A household, not a service. The cap is a spend backstop against a
+      # runaway client, not a capacity plan.
+      ReservedConcurrentExecutions: 5
+      FunctionUrlConfig:
+        AuthType: NONE  # auth is the app's shared-login session cookie
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref StateTable
+        - Statement:
+            - Effect: Allow
+              Action: ssm:GetParametersByPath
+              # Both ARNs: the path itself is the resource GetParametersByPath
+              # authorizes against, the wildcard covers the children returned.
+              Resource:
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPath}"
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPath}/*"
+      # No kms:Decrypt statement: WithDecryption under the AWS-managed
+      # alias/aws/ssm key is covered by the SSM permission above. A
+      # customer-managed key would need one added here.
+
+  # ------------------------------------------------------------ SCHEDULED ---
+  PollFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: hydro-script-poll
+      Handler: app.handlers.poll_handler
+      Description: Heat-watch poll, plus the nightly safety shutoff.
+      # ONE. The document store is last-write-wins, and the watches document
+      # is rewritten on every tick; a second concurrent poller could resurrect
+      # a cancelled watch or drop a progress notification's latched degree.
+      # This is the concurrency setting that makes last-write-wins safe.
+      ReservedConcurrentExecutions: 1
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref StateTable
+        - Statement:
+            - Effect: Allow
+              Action: ssm:GetParametersByPath
+              Resource:
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPath}"
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPath}/*"
+      Events:
+        Poll:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: !Ref PollSchedule
+            Input: '{"action": "poll"}'
+        # Kept as an independent schedule, not something session logic can
+        # forget to arm: this is the failsafe that stops a spa heating all
+        # night if every other path breaks.
+        Safety:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: !Ref SafetySchedule
+            ScheduleExpressionTimezone: !Ref SafetyTimezone
+            Input: '{"action": "safety"}'
+
+  # ----------------------------------------------------------------- DATA ---
+  StateTable:
+    Type: AWS::DynamoDB::Table
+    # Retained on purpose. The subscriptions document is the only copy of
+    # every phone's push registration; losing it means everyone silently stops
+    # getting notifications and has to re-subscribe by hand.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      # Three tiny documents read and written whole (see app/store.py).
+      # On-demand billing because the traffic is a household's button presses.
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+
+  # Log retention is not a default worth accepting: Lambda's log groups keep
+  # entries forever, and "never expires" is how a free-tier project quietly
+  # starts costing money.
+  HttpLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${HttpFunction}"
+      RetentionInDays: 30
+
+  PollLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${PollFunction}"
+      RetentionInDays: 30
+
+Outputs:
+  FunctionUrl:
+    Description: Public HTTPS endpoint for the app and API.
+    Value: !GetAtt HttpFunctionUrl.FunctionUrl
+  StateTableName:
+    Description: DynamoDB table backing the cache, watches, and subscriptions.
+    Value: !Ref StateTable
